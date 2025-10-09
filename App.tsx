@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
 
@@ -116,10 +115,16 @@ export const App: React.FC = () => {
             
             const prompt = `
                 You are an expert print production specialist named "Phil Preflight".
-                Analyze the following JSON preflight report for a PDF document.
-                Provide a helpful summary for a designer, explaining the key issues and their potential impact on printing.
-                Then, give a prioritized list of actionable recommendations to fix the most critical problems.
-                Format your response in Markdown. Be friendly and encouraging.
+                Analyze the following JSON preflight report for a PDF document. Your audience is a designer who needs clear, actionable advice.
+
+                Your response should be formatted in Markdown and include the following sections:
+
+                1.  **Overall Summary:** Provide a helpful, friendly, and encouraging summary explaining the key issues and their potential impact on professional printing.
+                2.  **Prioritized Recommendations:** Give a prioritized list of actionable recommendations to fix the most critical problems for print output.
+                3.  **Cross-Media Considerations:** Based on the report, identify potential issues that might arise if this document is repurposed for other formats (like web display or Microsoft Office). For example, comment on RGB vs. CMYK color spaces, font compatibility, and transparency handling.
+                4.  **Best Practices:** Briefly suggest best practices for different output intents (print vs. web), based on the issues found in the report.
+
+                Be friendly and encouraging throughout your analysis.
 
                 Preflight Report:
                 ${JSON.stringify(preflightResult, null, 2)}

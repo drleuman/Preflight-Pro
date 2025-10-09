@@ -1,7 +1,38 @@
+
 import * as pdfjsLib from 'pdfjs-dist';
 
-// This is required for pdf.js to work in a worker.
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.worker.min.js`;
+// This is required for pdf.js to work in a worker. The robust setup handles
+// cases where the CDN might be blocked by network policies.
+const setupPromise = (async () => {
+    const PDFJS_WORKER_URL = `https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.worker.min.js`;
+    try {
+        // A simple HEAD request can fail due to CORS policies inside a worker. A full fetch is more reliable.
+        const response = await fetch(PDFJS_WORKER_URL);
+        if (!response.ok) {
+            throw new Error(`CDN request failed with status ${response.status}`);
+        }
+        // If fetch is successful, use the direct URL.
+        pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+    } catch (e) {
+        console.warn(`PDF.js worker CDN (${PDFJS_WORKER_URL}) could not be configured directly, creating a fallback from a blob. Error: ${e.message}`);
+        try {
+            // As a fallback, fetch the script content and create a local blob URL.
+            const response = await fetch(PDFJS_WORKER_URL);
+            if (!response.ok) {
+                 // If fallback also fails, throw an error to be caught by the onmessage handler
+                throw new Error('Failed to fetch worker script for blob fallback');
+            }
+            const scriptText = await response.text();
+            const blob = new Blob([scriptText], { type: 'application/javascript' });
+            pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+        } catch (error) {
+             console.error("Fatal: Could not create blob fallback for PDF.js worker. Analysis will likely fail.", error);
+             // Re-throw the error to ensure setupPromise rejects, preventing a hang.
+             throw new Error(`Failed to set up PDF.js worker: ${error.message}`);
+        }
+    }
+})();
+
 
 const MM_TO_PT = 2.83465;
 
@@ -68,7 +99,22 @@ async function checkPageSizes(page, pageNum, firstPageSize) {
 self.onmessage = async (event) => {
     const { buffer, profile } = event.data;
 
+    const summaryMap = {
+        bleed: { id: 'bleed', issueCount: 0, status: 'ok' },
+        color: { id: 'color', issueCount: 0, status: 'ok' },
+        resolution: { id: 'resolution', issueCount: 0, status: 'ok' },
+        typography: { id: 'typography', issueCount: 0, status: 'ok' },
+        ink: { id: 'ink', issueCount: 0, status: 'ok' },
+        transparency: { id: 'transparency', issueCount: 0, status: 'ok' },
+        content: { id: 'content', issueCount: 0, status: 'ok' },
+        structure: { id: 'structure', issueCount: 0, status: 'ok' },
+    };
+
     try {
+        // Ensure the PDF.js worker is configured before we proceed. This will now
+        // throw an error if the setup fails, which will be caught below.
+        await setupPromise;
+
         const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
         const issues = [];
         let firstPageSize = null;
@@ -89,17 +135,6 @@ self.onmessage = async (event) => {
         }
         
         // --- Summarize and Score ---
-        const summaryMap = {
-            bleed: { id: 'bleed', issueCount: 0, status: 'ok' },
-            color: { id: 'color', issueCount: 0, status: 'ok' },
-            resolution: { id: 'resolution', issueCount: 0, status: 'ok' },
-            typography: { id: 'typography', issueCount: 0, status: 'ok' },
-            ink: { id: 'ink', issueCount: 0, status: 'ok' },
-            transparency: { id: 'transparency', issueCount: 0, status: 'ok' },
-            content: { id: 'content', issueCount: 0, status: 'ok' },
-            structure: { id: 'structure', issueCount: 0, status: 'ok' },
-        };
-
         const ruleToCategory = {
             BLEED_MISSING: 'bleed',
             SAFE_MARGIN_VIOLATION: 'bleed',
