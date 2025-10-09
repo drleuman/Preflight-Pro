@@ -1,75 +1,158 @@
-// This is a mock web worker to simulate PDF preflight analysis.
-// In a real application, this would contain complex logic to inspect the PDF file.
+import * as pdfjsLib from 'pdfjs-dist';
 
-self.onmessage = (event) => {
-    // The event.data contains the file and profile sent from the main thread.
-    // We are not using them here, but they would be used in a real implementation.
-    const { file, profile } = event.data;
+// This is required for pdf.js to work in a worker.
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.worker.min.js`;
 
-    // Simulate analysis time
-    setTimeout(() => {
-        const mockResult = {
-            issues: [
-                {
-                    id: '1',
-                    ruleId: 'BLEED_MISSING',
-                    page: 1,
-                    severity: 'Blocker',
-                    confidence: 0.99,
-                    message: 'Document is missing the required 3mm bleed.',
-                    bbox: { "x": 0, "y": 0, "width": 623.62, "height": 8.5 },
-                },
-                {
-                    id: '2',
-                    ruleId: 'LOW_PPI_COLOR',
-                    page: 2,
-                    severity: 'Major',
-                    confidence: 0.95,
-                    message: 'Image has low resolution (150 PPI), recommended is 300 PPI.',
-                    bbox: { x: 141.73, y: 141.73, width: 283.46, height: 226.77 },
-                },
-                 {
-                    id: '3',
-                    ruleId: 'BOX_INCONSISTENT',
-                    page: 3,
-                    severity: 'Major',
-                    confidence: 1.0,
-                    message: 'Page 3 has a different size than the rest of the document.',
-                },
-                {
-                    id: '4',
-                    ruleId: 'RGB_OBJECTS',
-                    page: 4,
-                    severity: 'Minor',
-                    confidence: 0.8,
-                    message: 'Document contains RGB objects, expected CMYK for printing.',
-                },
-                {
-                    id: '5',
-                    ruleId: 'HAIRLINE_STROKE',
-                    page: 5,
-                    severity: 'Minor',
-                    confidence: 0.9,
-                    message: 'A line has a stroke width below the minimum of 0.1pt.',
-                     bbox: { x: 50, y: 700, width: 200, height: 1 }
-                }
-            ],
-            summary: [
-                { id: 'bleed', status: 'error', issueCount: 1 },
-                { id: 'color', status: 'warning', issueCount: 1 },
-                { id: 'resolution', status: 'error', issueCount: 1 },
-                { id: 'typography', status: 'ok', issueCount: 0 },
-                { id: 'ink', status: 'warning', issueCount: 1 },
-                { id: 'transparency', status: 'ok', issueCount: 0 },
-                { id: 'content', status: 'ok', issueCount: 0 },
-                { id: 'structure', status: 'error', issueCount: 1 },
-            ],
-            score: 45,
-            pageCount: 5,
+const MM_TO_PT = 2.83465;
+
+// A helper to create a consistent issue object
+function createIssue(ruleId, pageNum, severity, message, details = '', bbox = undefined) {
+    return {
+        id: `${ruleId}-${pageNum}-${Math.random().toString(36).substring(2, 9)}`,
+        ruleId,
+        page: pageNum,
+        severity,
+        message,
+        details,
+        bbox,
+        confidence: 0.95, // Default confidence
+    };
+}
+
+// --- Analysis Functions ---
+
+async function checkBleed(page, pageNum, profile) {
+    if (profile.bleed <= 0) return null;
+
+    const bleedAmountPt = profile.bleed * MM_TO_PT;
+    const { mediaBox, bleedBox, trimBox } = page;
+    const boxToCheck = trimBox || mediaBox;
+
+    if (!bleedBox) {
+        return createIssue('BLEED_MISSING', pageNum, 'Blocker', `Page is missing a BleedBox, but profile requires ${profile.bleed}mm bleed.`);
+    }
+
+    const requiredWidth = (boxToCheck[2] - boxToCheck[0]) + (2 * bleedAmountPt);
+    const requiredHeight = (boxToCheck[3] - boxToCheck[1]) + (2 * bleedAmountPt);
+
+    const actualWidth = bleedBox[2] - bleedBox[0];
+    const actualHeight = bleedBox[3] - bleedBox[1];
+
+    // Use a small tolerance for floating point inaccuracies
+    if (actualWidth < requiredWidth - 0.1 || actualHeight < requiredHeight - 0.1) {
+        return createIssue('BLEED_MISSING', pageNum, 'Blocker', `Bleed area is smaller than the required ${profile.bleed}mm.`);
+    }
+    return null;
+}
+
+async function checkPageSizes(page, pageNum, firstPageSize) {
+    const mediaBox = page.mediaBox;
+    if (!mediaBox) {
+        return createIssue('BOX_INCONSISTENT', pageNum, 'Blocker', 'Page dimensions are missing (no MediaBox).');
+    }
+
+    const width = mediaBox[2] - mediaBox[0];
+    const height = mediaBox[3] - mediaBox[1];
+    const currentPageSize = `${width.toFixed(1)}x${height.toFixed(1)}`;
+
+    if (pageNum > 1 && firstPageSize && firstPageSize !== currentPageSize) {
+        return createIssue('PAGE_SIZE_MIXED', pageNum, 'Major', `Page size (${currentPageSize}pt) differs from first page (${firstPageSize}pt).`);
+    }
+    // Return size for the first page, otherwise null
+    return pageNum === 1 ? currentPageSize : null;
+}
+
+
+// --- Main Handler ---
+
+self.onmessage = async (event) => {
+    const { buffer, profile } = event.data;
+
+    try {
+        const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+        const issues = [];
+        let firstPageSize = null;
+
+        for (let i = 1; i <= doc.numPages; i++) {
+            const page = await doc.getPage(i);
+
+            // Run checks
+            const bleedIssue = await checkBleed(page, i, profile);
+            if (bleedIssue) issues.push(bleedIssue);
+            
+            const sizeCheckResult = await checkPageSizes(page, i, firstPageSize);
+            if (typeof sizeCheckResult === 'string' && i === 1) {
+                firstPageSize = sizeCheckResult;
+            } else if (sizeCheckResult) { // It's an issue object
+                issues.push(sizeCheckResult);
+            }
+        }
+        
+        // --- Summarize and Score ---
+        const summaryMap = {
+            bleed: { id: 'bleed', issueCount: 0, status: 'ok' },
+            color: { id: 'color', issueCount: 0, status: 'ok' },
+            resolution: { id: 'resolution', issueCount: 0, status: 'ok' },
+            typography: { id: 'typography', issueCount: 0, status: 'ok' },
+            ink: { id: 'ink', issueCount: 0, status: 'ok' },
+            transparency: { id: 'transparency', issueCount: 0, status: 'ok' },
+            content: { id: 'content', issueCount: 0, status: 'ok' },
+            structure: { id: 'structure', issueCount: 0, status: 'ok' },
         };
 
-        // Send the result back to the main thread
-        self.postMessage({ type: 'result', payload: mockResult });
+        const ruleToCategory = {
+            BLEED_MISSING: 'bleed',
+            SAFE_MARGIN_VIOLATION: 'bleed',
+            BOX_INCONSISTENT: 'structure',
+            PAGE_SIZE_MIXED: 'structure',
+            RGB_OBJECTS: 'color',
+            SPOT_COLORS_PRESENT: 'color',
+            LOW_PPI_COLOR: 'resolution',
+            LOW_PPI_GRAYSCALE: 'resolution',
+            LOW_PPI_LINEART: 'resolution',
+        };
 
-    }, 2000); // Simulate a 2-second analysis time
+        let score = 100;
+
+        issues.forEach(issue => {
+            // Update score based on severity
+            switch (issue.severity) {
+                case 'Blocker': score -= 25; break;
+                case 'Major': score -= 10; break;
+                case 'Minor': score -= 2; break;
+                default: break;
+            }
+
+            // Update summary card
+            const category = ruleToCategory[issue.ruleId];
+            if (category && summaryMap[category]) {
+                const card = summaryMap[category];
+                card.issueCount++;
+                const currentStatus = card.status;
+                if (currentStatus !== 'error') {
+                     card.status = (issue.severity === 'Blocker' || issue.severity === 'Major') ? 'error' : 'warning';
+                }
+            }
+        });
+
+        const result = {
+            issues,
+            summary: Object.values(summaryMap),
+            score: Math.max(0, score),
+            pageCount: doc.numPages,
+        };
+
+        self.postMessage(result);
+
+    } catch (e) {
+        console.error("Error in preflight worker:", e);
+        // Post an error result back to the main thread so the UI can update
+        const errorResult = {
+            issues: [createIssue('UNKNOWN', 1, 'Blocker', `Analysis failed: ${e.message}`)],
+            summary: Object.values(summaryMap).map(s => ({ ...s, status: 'error', issueCount: 0 })),
+            score: 0,
+            pageCount: 0,
+        };
+        self.postMessage(errorResult);
+    }
 };
