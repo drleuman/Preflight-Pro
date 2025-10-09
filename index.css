@@ -1,0 +1,31 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+body {
+    font-family: 'Inter', sans-serif;
+}
+.spinner {
+    border-top-color: #3498db;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+.prose table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1em;
+    margin-bottom: 1em;
+}
+.prose th, .prose td {
+    border: 1px solid #e2e8f0;
+    padding: 0.5em 1em;
+    text-align: left;
+}
+.dark .prose th, .dark .prose td {
+    border-color: #4a5568;
+}
+.prose th {
+    background-color: #f7fafc;
+}
+.dark .prose th {
+    background-color: #2d3748;
+}

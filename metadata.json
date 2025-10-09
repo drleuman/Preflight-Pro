@@ -1,0 +1,5 @@
+{
+  "name": "Print Price Pro Preflight",
+  "description": "An exclusive preflight web application that analyzes editorial PDFs and provides a detailed correction report with exact locations and concrete steps for fixing issues in Adobe InDesign, Illustrator, and Word. The analysis runs entirely on the client-side using PDF.js and Web Workers.",
+  "requestFramePermissions": []
+}
