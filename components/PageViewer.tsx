@@ -22,6 +22,10 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
     const pageCache = useRef<Map<number, PDFPageProxy>>(new Map());
     const renderTaskRef = useRef<RenderTask | null>(null);
 
+    const [pageInput, setPageInput] = useState('1');
+    const [isPageHighlighted, setIsPageHighlighted] = useState(false);
+    const highlightTimeoutRef = useRef<number | null>(null);
+
     const getPage = useCallback(async (pageNum: number): Promise<PDFPageProxy | null> => {
         const doc = pdfDocRef.current;
         if (!doc || pageNum < 1 || pageNum > doc.numPages) {
@@ -126,6 +130,27 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
             ctx.strokeRect(x, y, width, height);
         }
     }, [issue, currentPage, zoom, getPage]);
+    
+    // Sync input when currentPage changes from props or internal navigation
+    useEffect(() => {
+        setPageInput(String(currentPage));
+    }, [currentPage]);
+    
+    // Highlight when a new issue is selected
+    useEffect(() => {
+        if (issue) {
+            if (highlightTimeoutRef.current) {
+                clearTimeout(highlightTimeoutRef.current);
+            }
+            setIsPageHighlighted(true);
+            highlightTimeoutRef.current = window.setTimeout(() => {
+                setIsPageHighlighted(false);
+            }, 1500);
+        }
+        return () => {
+            if (highlightTimeoutRef.current) clearTimeout(highlightTimeoutRef.current);
+        };
+    }, [issue]);
 
     useEffect(() => {
         if (!pdfDoc) return;
@@ -217,6 +242,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
         };
     }, [pdfDoc, currentPage, totalPages, zoom, drawOverlay, getPage]);
     
+    // Jump to the issue's page and "snap back" if the user navigates away.
     useEffect(() => {
         if (issue && issue.page !== currentPage) {
             setCurrentPage(issue.page);
@@ -231,16 +257,56 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
         if (currentPage < totalPages) setCurrentPage(currentPage + 1);
     };
     
-    const handleZoomIn = () => setZoom(z => Math.min(z + 0.25, 4));
-    const handleZoomOut = () => setZoom(z => Math.max(z - 0.25, 0.5));
+    const handleZoomIn = () => setZoom(z => Math.min(z + 0.25, 2.0));
+    const handleZoomOut = () => setZoom(z => Math.max(z - 0.25, 0.75));
+    
+    const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        setPageInput(e.target.value);
+    };
+
+    const handlePageCommit = () => {
+        const pageNum = parseInt(pageInput, 10);
+        if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
+            if (pageNum !== currentPage) {
+                setCurrentPage(pageNum);
+            }
+        } else {
+            // Reset to current page if input is invalid
+            setPageInput(String(currentPage));
+        }
+    };
+
+    const handlePageInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            handlePageCommit();
+            e.currentTarget.blur();
+        } else if (e.key === 'Escape') {
+            setPageInput(String(currentPage));
+            e.currentTarget.blur();
+        }
+    };
 
     return (
         <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md h-full flex flex-col">
             <div className="flex justify-between items-center mb-2 flex-shrink-0">
                 <div className="flex items-center gap-2">
-                    <button onClick={handlePrevPage} disabled={currentPage <= 1} className="p-1 rounded-md disabled:opacity-50 hover:bg-gray-200 dark:hover:bg-gray-600">‹</button>
-                    <span>Page {currentPage} of {totalPages}</span>
-                    <button onClick={handleNextPage} disabled={currentPage >= totalPages} className="p-1 rounded-md disabled:opacity-50 hover:bg-gray-200 dark:hover:bg-gray-600">›</button>
+                    <button onClick={handlePrevPage} disabled={currentPage <= 1} className="p-1 rounded-md disabled:opacity-50 hover:bg-gray-200 dark:hover:bg-gray-600" aria-label="Previous Page">‹</button>
+                    <div className="text-sm flex items-center">
+                        <label htmlFor="page-input" className="sr-only">Current Page</label>
+                        <input
+                            id="page-input"
+                            type="text"
+                            inputMode="numeric"
+                            value={pageInput}
+                            onChange={handlePageInputChange}
+                            onBlur={handlePageCommit}
+                            onKeyDown={handlePageInputKeyDown}
+                            className={`w-12 text-center rounded-md bg-gray-200 dark:bg-gray-700 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isPageHighlighted ? 'ring-2 ring-indigo-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-800' : ''}`}
+                            aria-describedby="total-pages"
+                        />
+                        <span id="total-pages" className="px-2">of {totalPages}</span>
+                    </div>
+                    <button onClick={handleNextPage} disabled={currentPage >= totalPages} className="p-1 rounded-md disabled:opacity-50 hover:bg-gray-200 dark:hover:bg-gray-600" aria-label="Next Page">›</button>
                 </div>
                  <div className="flex items-center gap-2">
                     <button onClick={handleZoomOut} className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600">-</button>

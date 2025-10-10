@@ -1,6 +1,3 @@
-
-export type Language = 'es' | 'en' | 'fr' | 'de';
-
 export enum Severity {
     Blocker = 'Blocker',
     Major = 'Major',
@@ -45,6 +42,7 @@ export interface FixSteps {
     inDesign: string[];
     illustrator: string[];
     word: string[];
+    suggestions?: string[];
 }
 
 export interface Issue {
@@ -90,9 +88,3 @@ export interface PreflightProfile {
     allowAnnotations: boolean;
     requireEvenPages: boolean;
 }
-
-export type Translations = {
-    [key in Language]: {
-        [key: string]: any;
-    };
-};

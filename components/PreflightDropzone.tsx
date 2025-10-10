@@ -1,10 +1,11 @@
 
 import React, { useCallback } from 'react';
-import { ArrowUpTrayIcon } from '@heroicons/react/24/outline';
+import { ArrowUpTrayIcon, DocumentTextIcon, ArchiveBoxIcon } from '@heroicons/react/24/outline';
 
 interface PreflightDropzoneProps {
     onFileSelect: (file: File) => void;
-    t: Record<string, string>;
+    // Fix: Loosen type to allow nested objects in translations
+    t: Record<string, any>;
 }
 
 export const PreflightDropzone: React.FC<PreflightDropzoneProps> = ({ onFileSelect, t }) => {
@@ -13,10 +14,11 @@ export const PreflightDropzone: React.FC<PreflightDropzoneProps> = ({ onFileSele
         event.stopPropagation();
         if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
             const file = event.dataTransfer.files[0];
-            if (file.type === 'application/pdf') {
+            const fileType = file.name.split('.').pop()?.toLowerCase();
+            if (file.type === 'application/pdf' || fileType === 'idml' || file.type === 'application/zip' || file.type === 'application/x-zip-compressed' || fileType === 'zip') {
                 onFileSelect(file);
             } else {
-                alert("Please upload a PDF file.");
+                alert("Please upload a PDF, IDML, or ZIP file.");
             }
             event.dataTransfer.clearData();
         }
@@ -48,7 +50,7 @@ export const PreflightDropzone: React.FC<PreflightDropzoneProps> = ({ onFileSele
                 <input
                     id="file-input"
                     type="file"
-                    accept=".pdf"
+                    accept=".pdf,.idml,.zip"
                     onChange={onFileChange}
                     className="hidden"
                 />
@@ -58,17 +60,19 @@ export const PreflightDropzone: React.FC<PreflightDropzoneProps> = ({ onFileSele
             </div>
             <div className="mt-8 flex gap-4">
                 <button
-                  disabled
-                  title={t.uploadDisabled}
-                  className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-md text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                  onClick={onClick}
+                  title={t.uploadIdmlTitle}
+                  className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 transition-colors"
                 >
+                  <DocumentTextIcon className="w-5 h-5 text-blue-500" />
                   IDML
                 </button>
                  <button
-                  disabled
-                  title={t.uploadDisabled}
-                  className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-md text-gray-500 dark:text-gray-400 cursor-not-allowed"
+                  onClick={onClick}
+                  title={t.uploadZipTitle}
+                  className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 transition-colors"
                 >
+                  <ArchiveBoxIcon className="w-5 h-5 text-purple-500" />
                   ZIP
                 </button>
             </div>

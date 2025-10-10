@@ -2,20 +2,23 @@
 import React from 'react';
 import type { Issue } from '../types';
 import { SEVERITY_COLORS, SEVERITY_TEXT_COLORS } from '../constants';
-import { translations } from '../i18n/translations';
+import { CheckBadgeIcon } from '@heroicons/react/24/solid';
 
 interface IssuesPanelProps {
     issues: Issue[];
     onIssueSelect: (issue: Issue) => void;
     selectedIssue: Issue | null;
-    t: Record<string, string>;
+    // Fix: Loosen type to allow nested objects in translations
+    t: Record<string, any>;
 }
 
 export const IssuesPanel: React.FC<IssuesPanelProps> = ({ issues, onIssueSelect, selectedIssue, t }) => {
     if (issues.length === 0) {
         return (
-            <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md h-full flex items-center justify-center">
-                <p className="text-center text-gray-500 dark:text-gray-400">{t.noIssuesFound}</p>
+            <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md h-full flex flex-col items-center justify-center text-center">
+                <CheckBadgeIcon className="w-24 h-24 text-green-500 mb-4" />
+                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200">{t.allClearTitle}</h3>
+                <p className="text-gray-500 dark:text-gray-400 mt-1">{t.noIssuesFound}</p>
             </div>
         );
     }

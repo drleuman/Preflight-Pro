@@ -6,7 +6,8 @@ import { CheckCircleIcon, ExclamationTriangleIcon, XCircleIcon } from '@heroicon
 interface PreflightSummaryProps {
     summary: SummaryCard[];
     score: number;
-    t: Record<string, string>;
+    // Fix: Loosen type to allow nested objects in translations
+    t: Record<string, any>;
 }
 
 const statusIcons: Record<SummaryCard['status'], React.ElementType> = {

@@ -1,7 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-// Fix: Changed to a named import to match the updated export in App.tsx and fix the module resolution error.
-import { App } from './App';
+import App from './App';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

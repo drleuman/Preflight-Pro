@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { XMarkIcon } from '@heroicons/react/24/solid';
 import { SparklesIcon } from '@heroicons/react/24/outline';
@@ -9,7 +10,8 @@ interface AIAuditModalProps {
     onClose: () => void;
     isLoading: boolean;
     report: string;
-    t: Record<string, string>;
+    // Fix: Loosen type to allow nested objects in translations
+    t: Record<string, any>;
 }
 
 export const AIAuditModal: React.FC<AIAuditModalProps> = ({ isOpen, onClose, isLoading, report, t }) => {
