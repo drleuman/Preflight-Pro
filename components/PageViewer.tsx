@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport, RenderTask } from 'pdfjs-dist';
+import { ChevronLeftIcon, ChevronRightIcon, MagnifyingGlassPlusIcon, MagnifyingGlassMinusIcon } from '@heroicons/react/24/solid';
 import type { Issue } from '../types';
 
-// Set worker source to a robust UMD build from a reliable CDN to ensure consistency.
+// Set worker source to a robust UMD build from the allowed CDN to resolve network and syntax errors.
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.worker.min.js`;
 
 interface PageViewerProps {
@@ -11,9 +12,20 @@ interface PageViewerProps {
     issue: Issue | null;
 }
 
+// Define a correct interface for the render parameters to avoid using `any`.
+// The official @types/pdfjs-dist can sometimes be out of sync with the runtime library.
+interface CorrectRenderParameters {
+    canvasContext: CanvasRenderingContext2D;
+    viewport: PageViewport;
+    // FIX: Add 'canvas' property to satisfy the `RenderParameters` type from `pdfjs-dist`.
+    // The type checker requires this property for the `page.render()` method.
+    canvas: HTMLCanvasElement;
+}
+
 export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+    const viewerContainerRef = useRef<HTMLDivElement>(null);
     const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
     const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
     const [currentPage, setCurrentPage] = useState<number>(1);
@@ -21,6 +33,8 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
     const [zoom, setZoom] = useState(1);
     const pageCache = useRef<Map<number, PDFPageProxy>>(new Map());
     const renderTaskRef = useRef<RenderTask | null>(null);
+    const lastAnimatedIssueId = useRef<string | null>(null);
+    const animationFrameId = useRef<number | null>(null);
 
     const [pageInput, setPageInput] = useState('1');
     const [isPageHighlighted, setIsPageHighlighted] = useState(false);
@@ -49,7 +63,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
                 pdfDocRef.current = null;
             }
 
-            // Fallback for worker
+            // Fallback for worker - no longer needed with the robust URL but kept as a safeguard.
             try {
                 await fetch(pdfjsLib.GlobalWorkerOptions.workerSrc, { method: 'HEAD', mode: 'no-cors' });
             } catch {
@@ -93,6 +107,10 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
         
+        if (animationFrameId.current) {
+            cancelAnimationFrame(animationFrameId.current);
+        }
+        
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         if (issue && issue.page === currentPage && issue.bbox) {
@@ -114,20 +132,69 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
             const tp4 = pdfjsLib.Util.applyTransform(p4, transform);
 
             const minX = Math.min(tp1[0], tp2[0], tp3[0], tp4[0]);
-            const minY = Math.min(tp1[1], tp2[1], tp3[1], tp4[0]);
+            const minY = Math.min(tp1[1], tp2[1], tp3[1], tp4[1]);
             const maxX = Math.max(tp1[0], tp2[0], tp3[0], tp4[0]);
             const maxY = Math.max(tp1[1], tp2[1], tp3[1], tp4[1]);
             
-            const transformedBbox = [minX, minY, maxX, maxY];
-
-            const x = transformedBbox[0];
-            const y = transformedBbox[1];
-            const width = transformedBbox[2] - transformedBbox[0];
-            const height = transformedBbox[3] - transformedBbox[1];
+            const x = minX;
+            const y = minY;
+            const width = maxX - minX;
+            const height = maxY - minY;
             
-            ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(x, y, width, height);
+            const shouldAnimate = lastAnimatedIssueId.current !== issue.id;
+
+            if (shouldAnimate) {
+                lastAnimatedIssueId.current = issue.id;
+                
+                const container = viewerContainerRef.current;
+                if (container) {
+                    const padding = 100;
+                    container.scroll({
+                        left: x - padding > 0 ? x - padding : 0,
+                        top: y - padding > 0 ? y - padding : 0,
+                        behavior: 'smooth'
+                    });
+                }
+                
+                let startTime: number | null = null;
+                const duration = 500;
+
+                const animate = (timestamp: number) => {
+                    if (!startTime) startTime = timestamp;
+                    const elapsed = timestamp - startTime;
+                    const progress = Math.min(elapsed / duration, 1);
+
+                    const easeOutQuad = (t: number) => t * (2 - t);
+                    const easedProgress = easeOutQuad(progress);
+
+                    const opacity = easedProgress;
+                    const pulse = Math.abs(Math.sin(easedProgress * Math.PI * 4)); // Two pulses
+                    const lineWidth = 2 + pulse * 2.5;
+                    
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.strokeStyle = `rgba(255, 0, 0, ${opacity * 0.8})`;
+                    ctx.lineWidth = lineWidth;
+                    ctx.strokeRect(x, y, width, height);
+
+                    if (progress < 1) {
+                        animationFrameId.current = requestAnimationFrame(animate);
+                    } else {
+                        // Draw final static state
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(x, y, width, height);
+                    }
+                };
+                animationFrameId.current = requestAnimationFrame(animate);
+
+            } else {
+                ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x, y, width, height);
+            }
+        } else {
+            lastAnimatedIssueId.current = null;
         }
     }, [issue, currentPage, zoom, getPage]);
     
@@ -186,16 +253,14 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
             const overlayCtx = overlayCanvas.getContext('2d');
             overlayCtx?.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-            // The pdf.js runtime correctly uses 'canvasContext', but the project's TypeScript definitions
-            // may be mismatched and incorrectly expect a different property.
-            const renderContext = {
+            // FIX: Add canvas to render context to satisfy pdfjs-dist type definitions.
+            const renderContext: CorrectRenderParameters = {
                 canvasContext: canvasCtx,
                 viewport: viewport,
+                canvas: canvas,
             };
 
-            // Fix: Cast to 'any' to bypass a TypeScript type error where the type definition
-            // incorrectly requires a 'canvas' property. The object passed is correct for the runtime.
-            const task = page.render(renderContext as any);
+            const task = page.render(renderContext);
             renderTaskRef.current = task;
 
             try {
@@ -242,12 +307,12 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
         };
     }, [pdfDoc, currentPage, totalPages, zoom, drawOverlay, getPage]);
     
-    // Jump to the issue's page and "snap back" if the user navigates away.
+    // Jump to the issue's page when a new issue is selected.
     useEffect(() => {
-        if (issue && issue.page !== currentPage) {
+        if (issue) {
             setCurrentPage(issue.page);
         }
-    }, [issue, currentPage]);
+    }, [issue]);
 
     const handlePrevPage = () => {
         if (currentPage > 1) setCurrentPage(currentPage - 1);
@@ -290,7 +355,9 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
         <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md h-full flex flex-col">
             <div className="flex justify-between items-center mb-2 flex-shrink-0">
                 <div className="flex items-center gap-2">
-                    <button onClick={handlePrevPage} disabled={currentPage <= 1} className="p-1 rounded-md disabled:opacity-50 hover:bg-gray-200 dark:hover:bg-gray-600" aria-label="Previous Page">‹</button>
+                    <button onClick={handlePrevPage} disabled={currentPage <= 1} className="p-1 rounded-md disabled:opacity-50 hover:bg-gray-200 dark:hover:bg-gray-600" title="Previous Page" aria-label="Previous Page">
+                        <ChevronLeftIcon className="w-5 h-5" />
+                    </button>
                     <div className="text-sm flex items-center">
                         <label htmlFor="page-input" className="sr-only">Current Page</label>
                         <input
@@ -306,15 +373,21 @@ export const PageViewer: React.FC<PageViewerProps> = ({ pdfFile, issue }) => {
                         />
                         <span id="total-pages" className="px-2">of {totalPages}</span>
                     </div>
-                    <button onClick={handleNextPage} disabled={currentPage >= totalPages} className="p-1 rounded-md disabled:opacity-50 hover:bg-gray-200 dark:hover:bg-gray-600" aria-label="Next Page">›</button>
+                    <button onClick={handleNextPage} disabled={currentPage >= totalPages} className="p-1 rounded-md disabled:opacity-50 hover:bg-gray-200 dark:hover:bg-gray-600" title="Next Page" aria-label="Next Page">
+                        <ChevronRightIcon className="w-5 h-5" />
+                    </button>
                 </div>
                  <div className="flex items-center gap-2">
-                    <button onClick={handleZoomOut} className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600">-</button>
-                    <span>{(zoom * 100).toFixed(0)}%</span>
-                    <button onClick={handleZoomIn} className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600">+</button>
+                    <button onClick={handleZoomOut} className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600" title="Zoom Out" aria-label="Zoom Out">
+                        <MagnifyingGlassMinusIcon className="w-5 h-5" />
+                    </button>
+                    <span className="min-w-[4ch] text-center">{(zoom * 100).toFixed(0)}%</span>
+                    <button onClick={handleZoomIn} className="p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600" title="Zoom In" aria-label="Zoom In">
+                        <MagnifyingGlassPlusIcon className="w-5 h-5" />
+                    </button>
                 </div>
             </div>
-            <div className="flex-grow overflow-auto bg-gray-200 dark:bg-gray-900 rounded-md relative flex items-center justify-center">
+            <div ref={viewerContainerRef} className="flex-grow overflow-auto bg-gray-200 dark:bg-gray-900 rounded-md relative flex items-center justify-center">
                 <canvas ref={canvasRef} style={{ position: 'absolute', top: 0, left: 0 }}/>
                 <canvas ref={overlayCanvasRef} style={{ position: 'absolute', top: 0, left: 0, zIndex: 10 }}/>
             </div>

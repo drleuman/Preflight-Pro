@@ -1,11 +1,11 @@
 
 import React, { useCallback } from 'react';
 import { ArrowUpTrayIcon, DocumentTextIcon, ArchiveBoxIcon } from '@heroicons/react/24/outline';
+import type { Translations } from '../types';
 
 interface PreflightDropzoneProps {
     onFileSelect: (file: File) => void;
-    // Fix: Loosen type to allow nested objects in translations
-    t: Record<string, any>;
+    t: Translations;
 }
 
 export const PreflightDropzone: React.FC<PreflightDropzoneProps> = ({ onFileSelect, t }) => {
@@ -35,24 +35,36 @@ export const PreflightDropzone: React.FC<PreflightDropzoneProps> = ({ onFileSele
         }
     };
 
-    const onClick = () => {
+    const handleClick = () => {
         document.getElementById('file-input')?.click();
+    };
+    
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            handleClick();
+        }
     };
 
     return (
         <div className="w-full h-full flex flex-col items-center justify-center p-4">
             <div
-                onClick={onClick}
+                role="button"
+                tabIndex={0}
+                aria-label={t.uploadTitle}
+                onClick={handleClick}
+                onKeyDown={handleKeyDown}
                 onDrop={onDrop}
                 onDragOver={onDragOver}
-                className="w-full max-w-4xl h-96 flex flex-col items-center justify-center border-4 border-dashed border-gray-300 dark:border-gray-600 rounded-2xl cursor-pointer hover:border-indigo-500 dark:hover:border-indigo-400 transition-colors duration-300 bg-white dark:bg-gray-800"
+                className="w-full max-w-4xl h-96 flex flex-col items-center justify-center border-4 border-dashed border-gray-300 dark:border-gray-600 rounded-2xl cursor-pointer hover:border-indigo-500 dark:hover:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-900 transition-colors duration-300 bg-white dark:bg-gray-800"
             >
                 <input
                     id="file-input"
                     type="file"
-                    accept=".pdf,.idml,.zip"
+                    accept=".pdf" // Only accept PDF for now
                     onChange={onFileChange}
                     className="hidden"
+                    aria-hidden="true"
                 />
                 <ArrowUpTrayIcon className="w-24 h-24 text-gray-400 dark:text-gray-500" />
                 <p className="mt-4 text-2xl font-semibold text-gray-700 dark:text-gray-300">{t.uploadTitle}</p>
@@ -60,17 +72,17 @@ export const PreflightDropzone: React.FC<PreflightDropzoneProps> = ({ onFileSele
             </div>
             <div className="mt-8 flex gap-4">
                 <button
-                  onClick={onClick}
-                  title={t.uploadIdmlTitle}
-                  className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 transition-colors"
+                  disabled
+                  title="Próximamente"
+                  className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-200 flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <DocumentTextIcon className="w-5 h-5 text-blue-500" />
                   IDML
                 </button>
                  <button
-                  onClick={onClick}
-                  title={t.uploadZipTitle}
-                  className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2 transition-colors"
+                  disabled
+                  title="Próximamente"
+                  className="px-6 py-3 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-200 flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <ArchiveBoxIcon className="w-5 h-5 text-purple-500" />
                   ZIP

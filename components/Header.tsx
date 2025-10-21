@@ -1,14 +1,13 @@
 
 import React from 'react';
-import type { PreflightProfile } from '../types';
+import type { PreflightProfile, Translations } from '../types';
 import { DEFAULT_PROFILES } from '../profiles/defaults';
 import { DocumentArrowDownIcon, DocumentChartBarIcon } from '@heroicons/react/24/outline';
 
 interface HeaderProps {
     activeProfile: PreflightProfile;
     onProfileChange: (profile: PreflightProfile) => void;
-    // Fix: Loosen type to allow nested objects in translations
-    t: Record<string, any>;
+    t: Translations;
     onExportReport: () => void;
     isReportAvailable: boolean;
 }
@@ -46,7 +45,8 @@ export const Header: React.FC<HeaderProps> = ({
                     >
                         {DEFAULT_PROFILES.map(profile => (
                             <option key={profile.id} value={profile.id}>
-                                {t[profile.name] || profile.name}
+                                {/* FIX: Cast the translation lookup result to string to satisfy React's renderable type requirement. */}
+                                {(t[profile.name as keyof typeof t] || profile.name) as string}
                             </option>
                         ))}
                     </select>

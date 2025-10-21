@@ -1,4 +1,5 @@
 
+
 export const translations = {
     // General
     issues: 'Issues',
@@ -6,6 +7,7 @@ export const translations = {
     description: 'Description',
     severity: 'Severity',
     close: 'Close',
+    resolved: 'Resolved',
 
     // Severities
     Blocker: 'Blocker',
@@ -61,12 +63,26 @@ export const translations = {
     noIssueSelected: 'Select an issue from the list to see how to fix it.',
     analyzeNewPDF: 'Analyze New PDF',
     auditWithAI: 'Audit with AI',
+    issuesResolved: '{resolvedCount} of {totalCount} resolved',
+    markAsResolved: 'Mark as Resolved',
+    markAsUnresolved: 'Mark as Unresolved',
 
     // AI Modal
     aiAuditReport: 'AI Audit Report',
     auditing: 'Auditing your report...',
-    aiAnalyzing: 'Phil Preflight is analyzing your document and preparing a detailed report with recommendations. This might take a moment.',
-    aiError: 'Sorry, the AI audit could not be completed. Please check your connection or API key and try again.',
+    aiAnalyzing: 'Dr. Print is analyzing your document and preparing a detailed report with recommendations. This might take a moment.',
+    aiError: 'Sorry, the AI audit could not be completed. An unexpected error occurred. Please try again.',
+    aiErrorApiKey: 'AI functionality is disabled. The Gemini API key has not been configured.',
+    aiErrorApiKeyInvalid: 'The AI audit failed. The provided Gemini API key appears to be invalid or lacks the necessary permissions. Please verify your key configuration.',
+    aiErrorNetwork: 'The AI audit could not be completed due to a network error. Please check your internet connection and try again.',
+    aiErrorEmptyResponse: 'The AI audit returned an empty response. This could be a temporary issue with the service. Please try again in a moment.',
+    aiPrintReadinessScore: 'Print Readiness Score',
+    aiOverallAssessment: 'Overall Assessment',
+    aiCriticalIssues: 'Critical Issues',
+    aiMinorIssues: 'Minor Issues',
+    aiProactiveSuggestions: 'Proactive Suggestions',
+    aiImpact: 'Impact',
+    aiRecommendation: 'Recommendation',
 
     // PDF Report
     pdfReportTitle: 'Preflight Report',
@@ -90,7 +106,7 @@ export const translations = {
     fixIllustrator: 'Adobe Illustrator',
     fixWord: 'Microsoft Word',
     fontFallbackSuggestions: 'Font Fallback Suggestions',
-    
+
     // Fix Steps
     fixSteps: {
         FILE_ENCRYPTED: {
@@ -141,7 +157,7 @@ export const translations = {
         TAC_EXCEEDED: {
             inDesign: ['Go to `Window > Output > Separations Preview` and set View to "Ink Limit". Enter the required TAC limit (e.g., 320%) in the box.', 'Areas exceeding the limit will be highlighted (usually in red).', 'Adjust the colors or image curves (in Photoshop) for the highlighted areas to reduce the total ink coverage.'],
             illustrator: ['Use the `Separations Preview` panel similar to InDesign to identify problem areas.', 'Adjust CMYK values for fills and strokes, or edit placed images in Photoshop.'],
-            word: ['This cannot be controlled directly in Word. It is a result of how RGB colors are converted to CMYK.', 'Use CMYK-native design software for projects requiring strict ink limit control.'],
+        word: ['This cannot be controlled directly in Word. It is a result of how RGB colors are converted to CMYK.', 'Use CMYK-native design software for projects requiring strict ink limit control.'],
         },
         RICH_BLACK_TEXT: {
             inDesign: ['Select the text. Open the `Swatches` panel and ensure it is set to the standard `[Black]` swatch (which should be 100% K).', 'Avoid creating a custom "rich black" swatch for small text.'],

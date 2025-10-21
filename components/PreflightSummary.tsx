@@ -1,13 +1,15 @@
 
+
 import React from 'react';
-import type { SummaryCard } from '../types';
+import type { SummaryCard, Translations } from '../types';
 import { CheckCircleIcon, ExclamationTriangleIcon, XCircleIcon } from '@heroicons/react/24/solid';
 
 interface PreflightSummaryProps {
     summary: SummaryCard[];
     score: number;
-    // Fix: Loosen type to allow nested objects in translations
-    t: Record<string, any>;
+    t: Translations;
+    totalIssues: number;
+    resolvedIssuesCount: number;
 }
 
 const statusIcons: Record<SummaryCard['status'], React.ElementType> = {
@@ -22,7 +24,7 @@ const statusColors: Record<SummaryCard['status'], string> = {
     error: 'text-red-500',
 };
 
-export const PreflightSummary: React.FC<PreflightSummaryProps> = ({ summary, score, t }) => {
+export const PreflightSummary: React.FC<PreflightSummaryProps> = ({ summary, score, t, totalIssues, resolvedIssuesCount }) => {
     const scoreColor = score > 80 ? 'text-green-500' : score > 50 ? 'text-yellow-500' : 'text-red-500';
 
     return (
@@ -31,6 +33,14 @@ export const PreflightSummary: React.FC<PreflightSummaryProps> = ({ summary, sco
             <div className="text-center mb-4">
                 <p className="text-sm text-gray-500 dark:text-gray-400">{t.preflightScore}</p>
                 <p className={`text-6xl font-bold ${scoreColor}`}>{score.toFixed(0)}</p>
+                {totalIssues > 0 && (
+                    <p className="text-sm text-gray-600 dark:text-gray-300 mt-2">
+                        {t.issuesResolved
+                            .replace('{resolvedCount}', String(resolvedIssuesCount))
+                            .replace('{totalCount}', String(totalIssues))
+                        }
+                    </p>
+                )}
             </div>
             <div className="grid grid-cols-2 gap-2">
                 {summary.map(card => {

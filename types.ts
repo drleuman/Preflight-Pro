@@ -1,3 +1,5 @@
+import { translations } from './i18n/translations';
+
 export enum Severity {
     Blocker = 'Blocker',
     Major = 'Major',
@@ -88,3 +90,22 @@ export interface PreflightProfile {
     allowAnnotations: boolean;
     requireEvenPages: boolean;
 }
+
+export interface AIAuditIssue {
+    issueSummary: string;
+    impact: string;
+    recommendation: string;
+}
+
+export interface AIAuditReportData {
+    overallAssessment: string;
+    printReadinessScore: {
+        score: number;
+        rationale: string;
+    };
+    criticalIssues: AIAuditIssue[];
+    minorIssues: AIAuditIssue[];
+    proactiveSuggestions: string[];
+}
+
+export type Translations = typeof translations;

@@ -1,9 +1,5 @@
-// The pdf.min.js script is now prepended by the main thread, so importScripts is no longer needed.
-// 'pdfjsLib' is available globally.
-
-// This is required for pdf.js to work in a classic worker.
-// We are not creating nested workers, so we can set it to blank.
-pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+// The pdf.js library is now prepended to this script by the main app.
+// The `pdfjsLib` global is therefore available without needing to import it.
 
 let isCancelled = false;
 
@@ -62,98 +58,81 @@ async function checkStructure(doc, pageNum, page, profile, firstPageSize) {
     return issues;
 }
 
-async function checkImages(page, pageNum, profile) {
+async function checkImagesAndVectors(page, pageNum, profile) {
     const issues = [];
-    const viewport = page.getViewport({ scale: 1 });
     const operatorList = await page.getOperatorList();
-    const fns = operatorList.fnArray;
-    const args = operatorList.argsArray;
+    const { fnArray, argsArray } = operatorList;
 
-    for (let i = 0; i < fns.length; i++) {
-        if (fns[i] === pdfjsLib.OPS.paintImageXObject) {
-            const [imgRef] = args[i];
-            const img = await page.objs.get(imgRef);
+    let hasRgbVector = false;
+    let hasTransparency = false;
 
-            if (!img || !img.width || !img.height) continue;
-            
-            // Calculate effective PPI
-            const transform = page.commonObjs.get(img.transform);
-            const scaleX = Math.hypot(transform[0], transform[1]);
-            const scaleY = Math.hypot(transform[2], transform[3]);
-            const displayWidthInches = (img.width * scaleX) / 72;
-            const displayHeightInches = (img.height * scaleY) / 72;
-            const ppiX = img.width / displayWidthInches;
-            const ppiY = img.height / displayHeightInches;
-            const effectivePpi = Math.min(ppiX, ppiY);
+    for (let i = 0; i < fnArray.length; i++) {
+        const op = fnArray[i];
+        const args = argsArray[i];
 
-            const colorSpace = img.colorSpace?.name || 'Unknown';
-            
-            // LOW_PPI checks
-            if (colorSpace === 'DeviceRGB' || colorSpace === 'DeviceCMYK') {
-                if (effectivePpi < profile.minPpiColor) {
-                    issues.push(createIssue('LOW_PPI_COLOR', pageNum, 'Major', `Color image resolution is ${Math.round(effectivePpi)} PPI, below the required ${profile.minPpiColor} PPI.`));
-                }
-            } else if (colorSpace === 'DeviceGray') {
-                if (effectivePpi < profile.minPpiGrayscale) {
-                    issues.push(createIssue('LOW_PPI_GRAYSCALE', pageNum, 'Major', `Grayscale image resolution is ${Math.round(effectivePpi)} PPI, below the required ${profile.minPpiGrayscale} PPI.`));
-                }
+        // Check for RGB color setting operators
+        if (!profile.allowRgb && !hasRgbVector) {
+            if (op === pdfjsLib.OPS.setFillRGBColor || op === pdfjsLib.OPS.setStrokeRGBColor) {
+                hasRgbVector = true;
             }
+        }
 
-            // RGB_OBJECTS check for images
-            if (!profile.allowRgb && colorSpace === 'DeviceRGB') {
-                 issues.push(createIssue('RGB_OBJECTS', pageNum, 'Major', `Image uses the RGB color space.`));
+        // Check for transparency
+        if (!profile.allowTransparency && !hasTransparency) {
+            if (op === pdfjsLib.OPS.setExtGState) {
+                // This is a simplified check. A full check would inspect the ExtGState dictionary for transparency keys.
+                hasTransparency = true;
             }
+        }
+
+        // Check for images using RGB color space
+        if (!profile.allowRgb && op === pdfjsLib.OPS.paintImageXObject) {
+            try {
+                const imgRef = args[0];
+                const img = await page.objs.get(imgRef);
+                if (img && img.colorSpace && img.colorSpace.name === 'DeviceRGB') {
+                    issues.push(createIssue('RGB_OBJECTS', pageNum, 'Major', 'Image uses the RGB color space.'));
+                }
+            } catch (e) {
+                console.warn(`Could not analyze image properties on page ${pageNum}.`, e);
+            }
+        }
+    }
+
+    if (hasRgbVector) {
+        issues.push(createIssue('RGB_OBJECTS', pageNum, 'Major', 'Page contains vector objects or text using the RGB color space.'));
+    }
+    if (hasTransparency) {
+        issues.push(createIssue('TRANSPARENCY_DETECTED', pageNum, 'Minor', 'Page may contain transparency, which is disallowed by the current profile.'));
+    }
+
+    return issues;
+}
+
+
+async function checkFonts(page, pageNum) {
+    const issues = [];
+    const dependencies = await page.getDependencies();
+    for (const dep of dependencies) {
+        if (!dep.startsWith('font_')) continue;
+        try {
+            const font = await page.commonObjs.get(dep);
+            if (!font) continue;
+
+            // A font is considered embedded if it has its data property.
+            if (!font.data) {
+                issues.push(createIssue('FONT_MISSING', pageNum, 'Blocker', `Font '${font.name}' is not embedded in the PDF.`));
+            }
+            if (font.subtype === 'Type3') {
+                issues.push(createIssue('FONT_TYPE3', pageNum, 'Major', `Font '${font.name}' is a Type3 font, which may not print correctly.`));
+            }
+        } catch (e) {
+            console.warn(`Could not analyze font dependency on page ${pageNum}: ${dep}`, e);
         }
     }
     return issues;
 }
 
-async function checkVectorsAndText(page, pageNum, profile) {
-    const issues = [];
-    const operatorList = await page.getOperatorList();
-    
-    // Check for RGB color setting operators
-    if (!profile.allowRgb) {
-        const hasRgbOp = operatorList.fnArray.some(fn => 
-            fn === pdfjsLib.OPS.setFillRGBColor || 
-            fn === pdfjsLib.OPS.setStrokeRGBColor
-        );
-        if (hasRgbOp) {
-             issues.push(createIssue('RGB_OBJECTS', pageNum, 'Major', `Page contains vector objects or text using the RGB color space.`));
-        }
-    }
-
-    // Check fonts
-    const fonts = await page.getOperatorList({
-        // Extract all font names used on the page.
-        // This is a simplified approach; a full implementation would parse text operators.
-    });
-    // This part is complex. For now, we rely on a simplified check for font objects.
-    const pageFonts = await page.getFont();
-    for (const fontId in pageFonts) {
-        const font = pageFonts[fontId];
-        if (!font.isEmbedded) {
-            issues.push(createIssue('FONT_MISSING', pageNum, 'Blocker', `Font '${font.name}' is not embedded in the PDF.`));
-        }
-        if (font.type === 'Type3') {
-            issues.push(createIssue('FONT_TYPE3', pageNum, 'Major', `Font '${font.name}' is a Type3 font, which may not print correctly.`));
-        }
-    }
-
-    // Check for transparency
-    if (!profile.allowTransparency) {
-        const opList = await page.getOperatorList();
-        for (const fn of opList.fnArray) {
-            if (fn === pdfjsLib.OPS.setExtGState) {
-                // A simplified check. A full check would inspect the ExtGState dictionary for transparency keys.
-                issues.push(createIssue('TRANSPARENCY_DETECTED', pageNum, 'Warning', 'Page may contain transparency, which is disallowed by the current profile.'));
-                break; // Only one warning per page is needed.
-            }
-        }
-    }
-
-    return issues;
-}
 
 async function checkContent(page, pageNum, profile) {
     const issues = [];
@@ -166,6 +145,127 @@ async function checkContent(page, pageNum, profile) {
     return issues;
 }
 
+async function checkPrintAttributes(page, pageNum, profile) {
+    if (!profile.requireBlackOverprint && !profile.disallowWhiteOverprint) {
+        return [];
+    }
+
+    const issues = [];
+    const resources = await page.getResources();
+    const gStates = resources.gStates || {};
+    const operatorList = await page.getOperatorList();
+    const { fnArray, argsArray } = operatorList;
+
+    let currentFillColor = null;
+    let currentStrokeColor = null;
+    let currentFillOverprint = false;
+    let currentStrokeOverprint = false;
+
+    const is100KBlack = (color) => {
+        if (!color) return false;
+        // CMYK: C=0, M=0, Y=0, K=1
+        if (color.k === 1 && color.c === 0 && color.m === 0 && color.y === 0) return true;
+        // Grayscale: G=0
+        if (color.g === 0 && color.r === undefined) return true; // 'r' check distinguishes from RGB
+        return false;
+    };
+
+    const isWhite = (color) => {
+        if (!color) return false;
+        // CMYK: C=0, M=0, Y=0, K=0
+        if (color.k === 0 && color.c === 0 && color.m === 0 && color.y === 0) return true;
+        // Grayscale: G=1
+        if (color.g === 1) return true;
+        // RGB: R=1, G=1, B=1
+        if (color.r === 1 && color.g === 1 && color.b === 1) return true;
+        return false;
+    };
+
+    for (let i = 0; i < fnArray.length; i++) {
+        const op = fnArray[i];
+        const args = argsArray[i];
+
+        // 1. Update color and graphics state from operators
+        switch (op) {
+            case pdfjsLib.OPS.setFillCMYKColor: currentFillColor = { c: args[0], m: args[1], y: args[2], k: args[3] }; break;
+            case pdfjsLib.OPS.setStrokeCMYKColor: currentStrokeColor = { c: args[0], m: args[1], y: args[2], k: args[3] }; break;
+            case pdfjsLib.OPS.setFillGray: currentFillColor = { g: args[0] }; break;
+            case pdfjsLib.OPS.setStrokeGray: currentStrokeColor = { g: args[0] }; break;
+            case pdfjsLib.OPS.setFillRGBColor: currentFillColor = { r: args[0], g: args[1], b: args[2] }; break;
+            case pdfjsLib.OPS.setStrokeRGBColor: currentStrokeColor = { r: args[0], g: args[1], b: args[2] }; break;
+            case pdfjsLib.OPS.setExtGState: {
+                const gStateName = args[0];
+                const gState = gStates[gStateName];
+                if (gState) {
+                    if (gState.OPM === 1) { // Overprint Mode 1 forces overprint
+                        currentFillOverprint = true;
+                        currentStrokeOverprint = true;
+                    } else if (gState.OPM === 0) { // Overprint Mode 0 forces knockout
+                        currentFillOverprint = false;
+                        currentStrokeOverprint = false;
+                    } else { // OPM not set, check individual flags
+                        if (gState.OP !== undefined) {
+                            currentFillOverprint = gState.OP;
+                            currentStrokeOverprint = gState.OP;
+                        }
+                        if (gState.op !== undefined) {
+                            currentFillOverprint = gState.op;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        // 2. Check for issues on paint operations
+        const checkFill = () => {
+            if (profile.requireBlackOverprint && is100KBlack(currentFillColor) && !currentFillOverprint) {
+                issues.push(createIssue('BLACK_OVERPRINT_MISSING', pageNum, 'Minor', '100% black object is not set to overprint.'));
+            }
+            if (profile.disallowWhiteOverprint && isWhite(currentFillColor) && currentFillOverprint) {
+                issues.push(createIssue('WHITE_OVERPRINT', pageNum, 'Blocker', 'White object is set to overprint, which will make it invisible.'));
+            }
+        };
+
+        const checkStroke = () => {
+             if (profile.requireBlackOverprint && is100KBlack(currentStrokeColor) && !currentStrokeOverprint) {
+                issues.push(createIssue('BLACK_OVERPRINT_MISSING', pageNum, 'Minor', '100% black stroke is not set to overprint.'));
+            }
+            if (profile.disallowWhiteOverprint && isWhite(currentStrokeColor) && currentStrokeOverprint) {
+                issues.push(createIssue('WHITE_OVERPRINT', pageNum, 'Blocker', 'White stroke is set to overprint, which will make it invisible.'));
+            }
+        };
+        
+        switch (op) {
+            case pdfjsLib.OPS.fill:
+            case pdfjsLib.OPS.eoFill:
+                checkFill();
+                break;
+            
+            case pdfjsLib.OPS.stroke:
+            case pdfjsLib.OPS.closePathStroke:
+                checkStroke();
+                break;
+
+            case pdfjsLib.OPS.fillStroke:
+            case pdfjsLib.OPS.eoFillStroke:
+                checkFill();
+                checkStroke();
+                break;
+        }
+    }
+    
+    // Return unique issues per page, as a single state can apply to many objects
+    const uniqueMessages = new Set();
+    return issues.filter(issue => {
+        if (uniqueMessages.has(issue.message)) {
+            return false;
+        }
+        uniqueMessages.add(issue.message);
+        return true;
+    });
+}
+
 
 // --- Main Analysis Engine ---
 
@@ -176,7 +276,8 @@ async function analyze(buffer, profile) {
     try {
         const loadingTask = pdfjsLib.getDocument({
             data: new Uint8Array(buffer),
-            useWorkerFetch: false,
+            // When running inside a worker, prevent pdf.js from trying to spawn its own worker.
+            disableWorker: true,
             isEvalSupported: false,
             disableFontFace: true,
         });
@@ -197,11 +298,12 @@ async function analyze(buffer, profile) {
 
             const page = await doc.getPage(i);
             const structureIssues = await checkStructure(doc, i, page, profile, firstPageSize);
-            const imageIssues = await checkImages(page, i, profile);
-            const vectorIssues = await checkVectorsAndText(page, i, profile);
+            const imageVectorIssues = await checkImagesAndVectors(page, i, profile);
+            const fontIssues = await checkFonts(page, i);
             const contentIssues = await checkContent(page, i, profile);
+            const printAttrIssues = await checkPrintAttributes(page, i, profile);
 
-            allIssues.push(...structureIssues, ...imageIssues, ...vectorIssues, ...contentIssues);
+            allIssues.push(...structureIssues, ...imageVectorIssues, ...fontIssues, ...contentIssues, ...printAttrIssues);
         }
 
         // Final document-wide checks
@@ -211,32 +313,41 @@ async function analyze(buffer, profile) {
 
         // --- Summarize and Score ---
         const summaryMap = {
-            bleed: { id: 'bleed', issueCount: 0, status: 'ok' },
-            color: { id: 'color', issueCount: 0, status: 'ok' },
-            resolution: { id: 'resolution', issueCount: 0, status: 'ok' },
-            typography: { id: 'typography', issueCount: 0, status: 'ok' },
-            ink: { id: 'ink', issueCount: 0, status: 'ok' },
-            transparency: { id: 'transparency', issueCount: 0, status: 'ok' },
-            content: { id: 'content', issueCount: 0, status: 'ok' },
-            structure: { id: 'structure', issueCount: 0, status: 'ok' },
+            bleed: { id: 'bleed', title: 'Bleed', issueCount: 0, status: 'ok' },
+            color: { id: 'color', title: 'Color', issueCount: 0, status: 'ok' },
+            resolution: { id: 'resolution', title: 'Resolution', issueCount: 0, status: 'ok' },
+            typography: { id: 'typography', title: 'Typography', issueCount: 0, status: 'ok' },
+            ink: { id: 'ink', title: 'Ink', issueCount: 0, status: 'ok' },
+            transparency: { id: 'transparency', title: 'Transparency', issueCount: 0, status: 'ok' },
+            content: { id: 'content', title: 'Content', issueCount: 0, status: 'ok' },
+            structure: { id: 'structure', title: 'Structure', issueCount: 0, status: 'ok' },
         };
+        
         const ruleToCategory = {
+            FILE_ENCRYPTED: 'structure',
             BLEED_MISSING: 'bleed',
             BOX_INCONSISTENT: 'structure',
-            PAGE_SIZE_MIXED: 'structure',
-            PAGE_COUNT_INVALID: 'structure',
+            SAFE_MARGIN_VIOLATION: 'structure',
             LOW_PPI_COLOR: 'resolution',
             LOW_PPI_GRAYSCALE: 'resolution',
+            LOW_PPI_LINEART: 'resolution',
             RGB_OBJECTS: 'color',
             SPOT_COLORS_PRESENT: 'color',
+            TAC_EXCEEDED: 'ink',
+            RICH_BLACK_TEXT: 'ink',
             REGISTRATION_COLOR_USED: 'ink',
             BLACK_OVERPRINT_MISSING: 'ink',
             WHITE_OVERPRINT: 'ink',
+            TRANSPARENCY_DETECTED: 'transparency',
             FONT_MISSING: 'typography',
             FONT_TYPE3: 'typography',
-            TRANSPARENCY_DETECTED: 'transparency',
+            FONT_FAUX_STYLE: 'typography',
+            HAIRLINE_STROKE: 'ink',
             ANNOTATIONS_PRESENT: 'content',
+            PAGE_COUNT_INVALID: 'structure',
+            PAGE_SIZE_MIXED: 'structure',
         };
+
         let score = 100;
         allIssues.forEach(issue => {
             switch (issue.severity) {
@@ -244,9 +355,9 @@ async function analyze(buffer, profile) {
                 case 'Major': score -= 10; break;
                 case 'Minor': score -= 2; break;
             }
-            const category = ruleToCategory[issue.ruleId];
-            if (category && summaryMap[category]) {
-                const card = summaryMap[category];
+            const categoryKey = ruleToCategory[issue.ruleId];
+            if (categoryKey && summaryMap[categoryKey]) {
+                const card = summaryMap[categoryKey];
                 card.issueCount++;
                 if (card.status !== 'error') {
                      card.status = (issue.severity === 'Blocker' || issue.severity === 'Major') ? 'error' : 'warning';

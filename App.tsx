@@ -1,9 +1,8 @@
-
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import * as pdfjsLib from 'pdfjs-dist';
 
 import { Header } from './components/Header';
 import { PreflightDropzone } from './components/PreflightDropzone';
@@ -15,31 +14,26 @@ import { AIAuditModal } from './components/AIAuditModal';
 import { QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
 import { XCircleIcon } from '@heroicons/react/24/solid';
 
-import type { PreflightProfile, PreflightResult, Issue } from './types';
+import type { PreflightProfile, PreflightResult, Issue, Translations, AIAuditReportData } from './types';
 import { DEFAULT_PROFILES } from './profiles/defaults';
 import { translations } from './i18n/translations';
+import { PDF_REPORT_COLORS, AI_MODEL_NAME, AI_AUDIT_SYSTEM_INSTRUCTION } from './constants';
 
 type AppState = 'idle' | 'analyzing' | 'results' | 'unsupported' | 'error';
 
-const AI_AUDIT_SYSTEM_INSTRUCTION = `
-    You are an expert print production specialist named "Phil Preflight".
-    Analyze the following JSON preflight report for a PDF document. Your audience is a designer who needs clear, actionable advice.
-
-    Your response should be formatted in Markdown and include the following sections:
-
-    1.  **Overall Summary:** Provide a helpful, friendly, and encouraging summary explaining the key issues and their potential impact on professional printing.
-    2.  **Prioritized Recommendations:** Give a prioritized list of actionable recommendations to fix the most critical problems for print output.
-    3.  **Cross-Media Considerations:** Based on the report, identify potential issues that might arise if this document is repurposed for other formats (like web display or Microsoft Office). For example, comment on RGB vs. CMYK color spaces, font compatibility, and transparency handling.
-    4.  **Best Practices:** Briefly suggest best practices for different output intents (print vs. web), based on the issues found in the report.
-
-    Be friendly and encouraging throughout your analysis.
-`;
+// Extend the jsPDF interface to include the properties added by the autoTable plugin.
+// FIX: Changed from interface to type alias with intersection to correctly extend jsPDF instance type.
+// This resolves issues where TypeScript couldn't find standard jsPDF methods on the extended type.
+type jsPDFWithAutoTable = jsPDF & {
+  lastAutoTable: {
+    finalY: number;
+  };
+};
 
 const UnsupportedFileView: React.FC<{
     file: File;
     onGoBack: () => void;
-    // Fix: Loosen type to allow nested objects in translations
-    t: Record<string, any>;
+    t: Translations;
 }> = ({ file, onGoBack, t }) => {
     const fileType = file.name.split('.').pop()?.toUpperCase() || 'this file type';
     const message = t.unsupportedFileMessage.replace('{fileType}', fileType);
@@ -68,8 +62,7 @@ const ErrorView: React.FC<{
     file: File;
     message: string;
     onGoBack: () => void;
-    // Fix: Loosen type to allow nested objects in translations
-    t: Record<string, any>;
+    t: Translations;
 }> = ({ file, message, onGoBack, t }) => {
     return (
         <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center">
@@ -102,9 +95,10 @@ const App: React.FC = () => {
     const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [analysisProgress, setAnalysisProgress] = useState(0);
+    const [resolvedIssueIds, setResolvedIssueIds] = useState<Set<string>>(new Set());
 
     const [isAiModalOpen, setIsAiModalOpen] = useState(false);
-    const [aiReport, setAiReport] = useState('');
+    const [aiReport, setAiReport] = useState<AIAuditReportData | string | null>(null);
     const [isAiLoading, setIsAiLoading] = useState(false);
 
     const workerRef = useRef<Worker | null>(null);
@@ -113,31 +107,48 @@ const App: React.FC = () => {
     const t = translations;
 
     useEffect(() => {
-        aiRef.current = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
+        // Safely access the API key. In non-Node.js environments, `process` may be undefined or null.
+        // This robust check prevents a critical runtime error that would stop the app from loading.
+        const apiKey = (typeof process !== 'undefined' && process && process.env) ? process.env.API_KEY : undefined;
+        if (apiKey) {
+            aiRef.current = new GoogleGenAI({ apiKey });
+        } else {
+            console.warn("Gemini API key not found. AI features will be disabled.");
+        }
+        
         let worker: Worker | null = null;
         let workerUrl: string | null = null;
 
         const initializeWorker = async () => {
             try {
-                // Fetch both the PDF.js library and the worker script as text to pre-bundle them.
-                const pdfjsLibResponse = await fetch('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/legacy/build/pdf.min.js');
-                const pdfjsLibScript = await pdfjsLibResponse.text();
+                // Set the worker source for pdfjs-dist for components like PageViewer.
+                pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.worker.min.js`;
 
-                const workerScriptResponse = await fetch('./workers/preflight.worker.js');
-                const workerScript = await workerScriptResponse.text();
+                // Fetch the pdf.js library and our custom worker script.
+                const [pdfjsResponse, workerResponse] = await Promise.all([
+                    fetch('https://esm.sh/pdfjs-dist@4.0.379/legacy/build/pdf.min.js'),
+                    fetch('./workers/preflight.worker.js')
+                ]);
+
+                if (!pdfjsResponse.ok) throw new Error(`Failed to fetch pdf.js library: ${pdfjsResponse.statusText}`);
+                if (!workerResponse.ok) throw new Error(`Failed to fetch worker script: ${workerResponse.statusText}`);
+
+                const [pdfjsScript, workerScript] = await Promise.all([
+                    pdfjsResponse.text(),
+                    workerResponse.text()
+                ]);
                 
-                // Concatenate them into a single script. pdf.min.js must come first.
-                const combinedScript = pdfjsLibScript + '\n' + workerScript;
+                // Combine them into a single script. The semicolon is a safeguard.
+                const combinedScript = `${pdfjsScript};\n${workerScript}`;
                 
+                // Create a self-contained blob. The worker will have all dependencies and won't need to make network requests.
                 const blob = new Blob([combinedScript], { type: 'application/javascript' });
                 workerUrl = URL.createObjectURL(blob);
                 
-                const newWorker = new Worker(workerUrl, { type: 'classic' });
-                workerRef.current = newWorker;
-                worker = newWorker; // for cleanup
+                worker = new Worker(workerUrl, { type: 'classic' });
+                workerRef.current = worker;
 
-                newWorker.onmessage = (event: MessageEvent<{type: string, payload: any}>) => {
+                worker.onmessage = (event: MessageEvent<{type: string, payload: any}>) => {
                     const { type, payload } = event.data;
 
                     switch(type) {
@@ -159,9 +170,17 @@ const App: React.FC = () => {
                             break;
                     }
                 };
+
+                worker.onerror = (error) => {
+                    console.error("Error from preflight worker:", error);
+                    setErrorMessage(error.message || "An unexpected error occurred in the analysis engine.");
+                    setAppState('error');
+                };
+
             } catch (error) {
                 console.error("Failed to initialize preflight worker:", error);
-                setErrorMessage("Could not load the analysis engine. Please try refreshing the page.");
+                const fetchError = error as Error;
+                setErrorMessage(`Could not load the analysis engine. Please check your network connection and refresh the page. Details: ${fetchError.message}`);
                 setAppState('error');
             }
         };
@@ -169,21 +188,25 @@ const App: React.FC = () => {
         initializeWorker();
 
         return () => {
-            if (worker) {
-                worker.terminate();
-            }
+            // Terminate the worker and revoke the object URL to free up resources.
+            workerRef.current?.terminate();
             if (workerUrl) {
                 URL.revokeObjectURL(workerUrl);
             }
         };
     }, []);
 
-    const handleFileSelect = (file: File) => {
-        setSelectedFile(file);
+    const resetState = () => {
         setSelectedIssue(null);
         setPreflightResult(null);
         setErrorMessage(null);
         setAnalysisProgress(0);
+        setResolvedIssueIds(new Set());
+    };
+
+    const handleFileSelect = (file: File) => {
+        resetState();
+        setSelectedFile(file);
 
         const fileType = file.name.split('.').pop()?.toLowerCase();
 
@@ -203,6 +226,18 @@ const App: React.FC = () => {
             setSelectedFile(null);
         }
     };
+    
+    const handleToggleIssueResolved = (issueId: string) => {
+        setResolvedIssueIds(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(issueId)) {
+                newSet.delete(issueId);
+            } else {
+                newSet.add(issueId);
+            }
+            return newSet;
+        });
+    };
 
     const handleProfileChange = (profile: PreflightProfile) => {
         setActiveProfile(profile);
@@ -214,49 +249,119 @@ const App: React.FC = () => {
     const handleAnalyzeNew = () => {
         setAppState('idle');
         setSelectedFile(null);
-        setPreflightResult(null);
-        setSelectedIssue(null);
-        setErrorMessage(null);
-        setAnalysisProgress(0);
+        resetState();
         workerRef.current?.postMessage({ type: 'CANCEL' });
     };
 
     const handleAiAudit = async () => {
-        if (!preflightResult || !aiRef.current) return;
+        if (!preflightResult) {
+            return;
+        }
 
         setIsAiModalOpen(true);
         setIsAiLoading(true);
-        setAiReport('');
+        setAiReport(null);
+
+        if (!aiRef.current) {
+            setAiReport(t.aiErrorApiKey);
+            setIsAiLoading(false);
+            return;
+        }
 
         try {
+            const responseSchema = {
+                type: Type.OBJECT,
+                properties: {
+                    overallAssessment: { type: Type.STRING, description: "A technical summary of the document's print-readiness." },
+                    printReadinessScore: {
+                        type: Type.OBJECT,
+                        properties: {
+                            score: { type: Type.NUMBER, description: "A numerical score from 0-100 for print readiness." },
+                            rationale: { type: Type.STRING, description: "A brief, technical rationale for the score." },
+                        },
+                        required: ['score', 'rationale'],
+                    },
+                    criticalIssues: {
+                        type: Type.ARRAY,
+                        description: "A list of all 'Blocker' and 'Major' severity issues.",
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                issueSummary: { type: Type.STRING, description: "A concise summary of the issue." },
+                                impact: { type: Type.STRING, description: "The technical impact of the issue on production." },
+                                recommendation: { type: Type.STRING, description: "A clear recommendation for fixing the issue." },
+                            },
+                            required: ['issueSummary', 'impact', 'recommendation'],
+                        },
+                    },
+                    minorIssues: {
+                        type: Type.ARRAY,
+                        description: "A list of all 'Minor', 'Nit', and 'Info' severity issues.",
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                issueSummary: { type: Type.STRING, description: "A concise summary of the issue." },
+                                impact: { type: Type.STRING, description: "The technical impact of the issue on production." },
+                                recommendation: { type: Type.STRING, description: "A clear recommendation for fixing the issue." },
+                            },
+                             required: ['issueSummary', 'impact', 'recommendation'],
+                        },
+                    },
+                    proactiveSuggestions: {
+                        type: Type.ARRAY,
+                        description: "A list of actionable best-practice suggestions to improve the file.",
+                        items: { type: Type.STRING },
+                    },
+                },
+                required: ['overallAssessment', 'printReadinessScore', 'criticalIssues', 'minorIssues', 'proactiveSuggestions'],
+            };
+
             const userPrompt = `Preflight Report:\n${JSON.stringify(preflightResult, null, 2)}`;
 
             const response = await aiRef.current.models.generateContent({
-                model: 'gemini-2.5-flash',
+                model: AI_MODEL_NAME,
                 contents: userPrompt,
                 config: {
                     systemInstruction: AI_AUDIT_SYSTEM_INSTRUCTION,
+                    responseMimeType: "application/json",
+                    responseSchema: responseSchema,
                 }
             });
 
             const reportText = response.text;
             if (reportText && reportText.trim()) {
-                setAiReport(reportText);
+                try {
+                    const parsedReport: AIAuditReportData = JSON.parse(reportText);
+                    setAiReport(parsedReport);
+                } catch (parseError) {
+                    console.error('AI Audit JSON parsing failed:', parseError);
+                    console.error('Raw AI response:', reportText);
+                    setAiReport(t.aiError);
+                }
             } else {
                 console.error('AI Audit returned an empty response.');
-                setAiReport(t.aiError);
+                setAiReport(t.aiErrorEmptyResponse);
             }
 
         } catch (error) {
             console.error('AI Audit failed:', error);
-            setAiReport(t.aiError);
+            const err = error as Error;
+            const errorMessage = err.message || err.toString();
+            
+            if (errorMessage.toLowerCase().includes('api key')) {
+                setAiReport(t.aiErrorApiKeyInvalid);
+            } else if (err.name === 'TypeError' && errorMessage.toLowerCase().includes('fetch')) {
+                setAiReport(t.aiErrorNetwork);
+            } else {
+                setAiReport(t.aiError);
+            }
         } finally {
             setIsAiLoading(false);
         }
     };
 
-    const generatePdfReport = (result: PreflightResult, profile: PreflightProfile, fileName: string, t: Record<string, any>) => {
-        const doc = new jsPDF();
+    const generatePdfReport = (result: PreflightResult, profile: PreflightProfile, fileName: string, t: Translations) => {
+        const doc = new jsPDF() as jsPDFWithAutoTable;
         const pageHeight = doc.internal.pageSize.height;
         let y = 20;
 
@@ -267,16 +372,16 @@ const App: React.FC = () => {
         doc.setFontSize(10);
         doc.text(`${t.pdfFileName}: ${fileName}`, 14, y);
         y += 5;
-        doc.text(`${t.pdfProfileUsed}: ${t[profile.name] || profile.name}`, 14, y);
+        doc.text(`${t.pdfProfileUsed}: ${t[profile.name as keyof typeof t] || profile.name}`, 14, y);
         y += 5;
         doc.text(`${t.pdfAnalysisDate}: ${new Date().toLocaleString()}`, 14, y);
         y += 10;
 
         doc.setFontSize(12);
         doc.text(`${t.pdfOverallScore}:`, 14, y);
-        doc.setFontSize(20).setTextColor(result.score > 80 ? '#22c55e' : result.score > 50 ? '#f59e0b' : '#ef4444');
+        doc.setFontSize(20).setTextColor(result.score > 80 ? PDF_REPORT_COLORS.OK : result.score > 50 ? PDF_REPORT_COLORS.WARNING : PDF_REPORT_COLORS.ERROR);
         doc.text(String(result.score.toFixed(0)), 50, y);
-        doc.setTextColor(0, 0, 0);
+        doc.setTextColor(PDF_REPORT_COLORS.TEXT);
         y += 15;
 
         doc.setFontSize(16);
@@ -285,19 +390,21 @@ const App: React.FC = () => {
         autoTable(doc, {
             startY: y + 8,
             head: [[t.pdfCategory, t.pdfStatus, t.issues]],
-            body: result.summary.map(s => [t[s.id] || s.title, t[s.status] || s.status, s.issueCount]),
+            // FIX: Cast translated values to string to resolve type ambiguity.
+            // TypeScript was inferring the type of `t[...]` too broadly, including object types from `t.fixSteps`.
+            body: result.summary.map(s => [(t[s.id as keyof typeof t] || s.title) as string, (t[s.status as keyof typeof t] || s.status) as string, s.issueCount]),
             theme: 'striped',
-            headStyles: { fillColor: [41, 128, 185] },
+            headStyles: { fillColor: PDF_REPORT_COLORS.PRIMARY },
             didParseCell: (data) => {
                 if (data.column.index === 1 && data.cell.section === 'body') {
                     const status = data.cell.text[0].toLowerCase();
-                    if (status.includes('ok')) data.cell.styles.textColor = '#22c55e';
-                    if (status.includes('warning')) data.cell.styles.textColor = '#f59e0b';
-                    if (status.includes('error')) data.cell.styles.textColor = '#ef4444';
+                    if (status.includes('ok')) data.cell.styles.textColor = PDF_REPORT_COLORS.OK;
+                    if (status.includes('warning')) data.cell.styles.textColor = PDF_REPORT_COLORS.WARNING;
+                    if (status.includes('error')) data.cell.styles.textColor = PDF_REPORT_COLORS.ERROR;
                 }
             }
         });
-        y = (doc as any).lastAutoTable.finalY + 15;
+        y = doc.lastAutoTable.finalY + 15;
 
         if (result.issues.length > 0) {
             if (y > pageHeight - 40) { doc.addPage(); y = 20; }
@@ -307,11 +414,13 @@ const App: React.FC = () => {
             autoTable(doc, {
                 startY: y + 8,
                 head: [[t.pdfPage, t.pdfSeverity, t.pdfDescription]],
-                body: result.issues.map(issue => [issue.page, t[issue.severity] || issue.severity, issue.message]),
+                // FIX: Cast translated severity to string to resolve type ambiguity.
+                // TypeScript was inferring the type of `t[...]` too broadly, including object types from `t.fixSteps`.
+                body: result.issues.map(issue => [issue.page, (t[issue.severity as keyof typeof t] || issue.severity) as string, issue.message]),
                 theme: 'grid',
-                headStyles: { fillColor: [41, 128, 185] }
+                headStyles: { fillColor: PDF_REPORT_COLORS.PRIMARY }
             });
-            y = (doc as any).lastAutoTable.finalY + 15;
+            y = doc.lastAutoTable.finalY + 15;
 
             const hasTransparencyIssue = result.issues.some(issue => issue.ruleId === 'TRANSPARENCY_DETECTED');
             if (hasTransparencyIssue) {
@@ -321,7 +430,9 @@ const App: React.FC = () => {
                 y += 8;
                 
                 doc.setFontSize(10).setFont(undefined, 'normal');
-                const bodyText = t.pdfTransparencyWarningBody.replace('{profileName}', t[profile.name] || profile.name);
+                const translatedProfile = t[profile.name as keyof typeof t];
+                const profileDisplayName = typeof translatedProfile === 'string' ? translatedProfile : profile.name;
+                const bodyText = t.pdfTransparencyWarningBody.replace('{profileName}', profileDisplayName);
                 const splitText = doc.splitTextToSize(bodyText, 180);
                 doc.text(splitText, 14, y);
                 y += (splitText.length * 5) + 10;
@@ -333,7 +444,7 @@ const App: React.FC = () => {
             y += 10;
             
             result.issues.forEach((issue, index) => {
-                const fixSteps = t.fixSteps?.[issue.ruleId];
+                const fixSteps = t.fixSteps[issue.ruleId as keyof typeof t.fixSteps];
                 if (!fixSteps) return;
 
                 if (y > pageHeight - 60) { doc.addPage(); y = 20; }
@@ -397,8 +508,8 @@ const App: React.FC = () => {
                 )}
 
                 {appState === 'analyzing' && (
-                    <div className="flex flex-col items-center justify-center h-full text-lg">
-                        <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <div className="flex flex-col items-center justify-center h-full text-xl">
+                        <svg className="animate-spin mb-4 h-8 w-8 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                         </svg>
@@ -409,12 +520,20 @@ const App: React.FC = () => {
                 {appState === 'results' && selectedFile && preflightResult && (
                     <div className="grid grid-cols-12 gap-4 h-full">
                         <div className="col-span-12 xl:col-span-3 flex flex-col gap-4 overflow-y-auto">
-                           <PreflightSummary summary={preflightResult.summary} score={preflightResult.score} t={t} />
+                           <PreflightSummary
+                                summary={preflightResult.summary}
+                                score={preflightResult.score}
+                                t={t}
+                                totalIssues={preflightResult.issues.length}
+                                resolvedIssuesCount={resolvedIssueIds.size}
+                            />
                             <div className="flex-grow h-0 min-h-[200px]">
                                 <IssuesPanel 
                                     issues={preflightResult.issues}
                                     onIssueSelect={setSelectedIssue}
                                     selectedIssue={selectedIssue}
+                                    resolvedIssueIds={resolvedIssueIds}
+                                    onToggleIssueResolved={handleToggleIssueResolved}
                                     t={t}
                                 />
                             </div>
@@ -423,7 +542,12 @@ const App: React.FC = () => {
                             <PageViewer pdfFile={selectedFile} issue={selectedIssue} />
                         </div>
                         <div className="col-span-12 xl:col-span-3 flex flex-col h-full">
-                            <FixDrawer issue={selectedIssue} t={t} />
+                            <FixDrawer
+                                issue={selectedIssue}
+                                t={t}
+                                onToggleIssueResolved={handleToggleIssueResolved}
+                                resolvedIssueIds={resolvedIssueIds}
+                            />
                         </div>
                     </div>
                 )}
@@ -453,7 +577,7 @@ const App: React.FC = () => {
                 isOpen={isAiModalOpen}
                 onClose={() => setIsAiModalOpen(false)}
                 isLoading={isAiLoading}
-                report={aiReport}
+                reportData={aiReport}
                 t={t}
             />
         </div>
