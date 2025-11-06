@@ -6,7 +6,6 @@
   <title>PDF Preflight Check</title>
   <meta name="gemini-api-key" content="YOUR_KEY_HERE">
 
-  <!-- CSP (Content Security Policy) -->
   <meta http-equiv="Content-Security-Policy" content="
     default-src 'self';
     script-src 'self' 'unsafe-inline' 'unsafe-eval' https://aistudiocdn.com;
@@ -19,12 +18,9 @@
     base-uri 'self'; form-action 'self'; upgrade-insecure-requests;
   ">
 
-  <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Custom CSS for transitions -->
   <link rel="stylesheet" href="index.css">
 
-  <!-- Import Map for third-party libraries -->
   <script type="importmap" id="main-importmap">
 {
   "imports": {
@@ -40,35 +36,27 @@
 }
 </script>
 
-  <!-- SystemJS and Babel Standalone -->
   <script src="https://aistudiocdn.com/systemjs@6.14.3/dist/s.min.js"></script>
   <script src="https://aistudiocdn.com/@babel/standalone@7.24.0/babel.min.js"></script>
 
-  <!-- Load SystemJS Babel Loader and then the app -->
   <script>
-    // Ensure SystemJS is loaded before we try to use it
-    if (typeof System === 'undefined') {
-      console.error('SystemJS is not defined. Ensure s.min.js loaded correctly.');
-    } else {
-      // Configure SystemJS to use the correct base for local modules
-      System.config({
-        baseURL: './' // Current directory for local app files
-      });
-      System.import('./loader/systemjs-babel-loader.ts')
-        .then(() => System.import('./index.tsx'))
-        .catch(err => console.error('Error loading application:', err));
-    }
+    System.config({
+      baseURL: './',
+      importMap: 'main-importmap' // Ensure SystemJS uses the correct import map
+    });
+    System.import('./loader/systemjs-babel-loader.ts')
+      .then(() => System.import('./index.tsx'))
+      .catch(err => console.error('Error loading application:', err));
   </script>
-
 <script type="importmap">
 {
   "imports": {
     "react": "https://aistudiocdn.com/react@^19.2.0",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
     "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.28.0",
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.29.0",
     "@heroicons/react/": "https://aistudiocdn.com/@heroicons/react@^2.2.0/",
-    "pdfjs-dist/": "https://aistudiocdn.com/pdfjs-dist@^5.4.296/",
+    "pdfjs-dist/": "https://aistudiocdn.com/pdfjs-dist@^5.4.394/",
     "marked": "https://aistudiocdn.com/marked@^16.4.1",
     "dompurify": "https://aistudiocdn.com/dompurify@^3.3.0",
     "webworker": "https://aistudiocdn.com/webworker@^0.8.4"

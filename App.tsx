@@ -31,7 +31,7 @@ function getImportMapContent(): { imports: { [key: string]: string } } {
 
 function App() {
   const [file, setFile] = useState<File | null>(null);
-  const [numPages, setNumPages] = useState<number>(1);
+  const [numPages, setNumPages] = useState<number>(0); // Initialize with 0 pages
   const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null);
   const [loadingState, setLoadingState] = useState<'idle' | 'loading' | 'analyzing' | 'error' | 'success'>('idle');
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -124,6 +124,7 @@ function App() {
     setPreflightResult(null);
     setSelectedIssue(null);
     setCurrentPage(1);
+    setNumPages(0); // Reset page count when new file is selected
     setAnalysisError(null);
     setLoadingState('loading');
 
@@ -133,9 +134,11 @@ function App() {
       type: selectedFile.type,
     };
 
-    // Simulate getting page count for mock worker
-    // In a real app, this would come from PDF.js
-    const samplePageCount = 5; // Placeholder for the mock worker
+    // Note: The worker still receives a mocked samplePageCount.
+    // In a real scenario, this would ideally be passed after PDF.js
+    // has determined the actual page count, or the worker would
+    // be responsible for loading the PDF itself to get page count.
+    const mockWorkerPageCount = 5; // Placeholder for the mock worker
 
     // Send command to worker
     if (workerRef.current) {
@@ -143,7 +146,7 @@ function App() {
       workerRef.current.postMessage({
         type: 'analyze',
         fileMeta,
-        samplePageCount,
+        samplePageCount: mockWorkerPageCount,
       } as PreflightWorkerCommand);
     }
   }, []);
@@ -157,6 +160,10 @@ function App() {
     // isAIAuditModalOpen and isEfficiencyAuditModalOpen are managed by their respective buttons.
   }, []);
 
+  const handleNumPagesChange = useCallback((count: number) => {
+    setNumPages(count);
+  }, []);
+
   const openAIAuditModal = useCallback(() => setIsAIAuditModalOpen(true), []);
   const closeAIAuditModal = useCallback(() => setIsAIAuditModalOpen(false), []);
 
@@ -165,7 +172,7 @@ function App() {
 
   // Effect to navigate to issue page if selected issue changes
   useEffect(() => {
-    if (selectedIssue && selectedIssue.page !== currentPage) {
+    if (selectedIssue && selectedIssue.page && selectedIssue.page !== currentPage) {
       setCurrentPage(selectedIssue.page);
     }
   }, [selectedIssue, currentPage]);
@@ -224,9 +231,10 @@ function App() {
             <h2 className="text-xl font-semibold mb-4">{t('pdfViewer')}</h2>
             <PageViewer
               file={file}
-              numPages={numPages} // This will need to be updated by PDF.js once loaded
+              numPages={numPages}
               currentPage={currentPage}
               onPageChange={setCurrentPage}
+              onNumPagesChange={handleNumPagesChange} // Pass the callback
               selectedIssue={selectedIssue}
             />
           </div>

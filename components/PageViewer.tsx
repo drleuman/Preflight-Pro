@@ -10,9 +10,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://aistudiocdn.com/pdfjs-dist@4.4
 
 interface PageViewerProps {
   file: File | null;
-  numPages: number;
+  numPages: number; // Now comes from App.tsx state, updated by PageViewer
   currentPage: number;
   onPageChange: (page: number) => void;
+  onNumPagesChange: (count: number) => void; // New prop to update App.tsx
   selectedIssue: Issue | null;
 }
 
@@ -21,11 +22,26 @@ export const PageViewer: React.FC<PageViewerProps> = ({
   numPages,
   currentPage,
   onPageChange,
+  onNumPagesChange, // Destructure new prop
   selectedIssue,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pdfRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const [scale, setScale] = useState(1.5); // Initial scale for rendering
+
+  // Fix: Move drawBbox before useEffect that uses it
+  const drawBbox = useCallback((ctx: CanvasRenderingContext2D, bbox: Bbox, canvasWidth: number, canvasHeight: number) => {
+    const x = bbox.x * canvasWidth;
+    const y = bbox.y * canvasHeight;
+    const width = bbox.width * canvasWidth;
+    const height = bbox.height * canvasHeight;
+
+    ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+    ctx.lineWidth = 3;
+    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)'; // Semi-transparent red fill
+    ctx.strokeRect(x, y, width, height);
+    ctx.fillRect(x, y, width, height);
+  }, []);
 
   // Effect to load PDF when file changes
   useEffect(() => {
@@ -35,6 +51,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({
           pdfRef.current.destroy();
           pdfRef.current = null;
         }
+        onNumPagesChange(0); // Reset page count in App.tsx
         return;
       }
 
@@ -45,11 +62,12 @@ export const PageViewer: React.FC<PageViewerProps> = ({
           const loadingTask = pdfjsLib.getDocument({ data: typedArray });
           const pdf = await loadingTask.promise;
           pdfRef.current = pdf;
-          // onNumPagesChange(pdf.numPages); // Would inform App.tsx about actual page count
+          onNumPagesChange(pdf.numPages); // Inform App.tsx about actual page count
           onPageChange(1); // Reset to first page
         } catch (error) {
           console.error("Error loading PDF:", error);
           // TODO: handle PDF loading error in UI
+          onNumPagesChange(0); // Reset page count on error
         }
       };
       fileReader.readAsArrayBuffer(file);
@@ -59,17 +77,26 @@ export const PageViewer: React.FC<PageViewerProps> = ({
           pdfRef.current.destroy();
           pdfRef.current = null;
         }
+        onNumPagesChange(0); // Clean up on unmount or file change
       };
     };
 
     loadPdf();
-  }, [file]); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file, onNumPagesChange]); // onNumPagesChange is a stable callback from App.tsx
+
 
   // Effect to render page when currentPage, scale, or selectedIssue changes
   useEffect(() => {
     const renderPage = async () => {
       const canvas = canvasRef.current;
-      if (!canvas || !pdfRef.current || currentPage < 1 || currentPage > numPages) {
+      if (!canvas || !pdfRef.current || currentPage < 1 || currentPage > numPages || numPages === 0) {
+        // Clear canvas if no PDF or invalid page
+        if (canvas) {
+          const context = canvas.getContext('2d');
+          if (context) {
+            context.clearRect(0, 0, canvas.width, canvas.height);
+          }
+        }
         return;
       }
 
@@ -101,20 +128,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({
     };
 
     renderPage();
-  }, [currentPage, numPages, scale, selectedIssue]);
-
-  const drawBbox = useCallback((ctx: CanvasRenderingContext2D, bbox: Bbox, canvasWidth: number, canvasHeight: number) => {
-    const x = bbox.x * canvasWidth;
-    const y = bbox.y * canvasHeight;
-    const width = bbox.width * canvasWidth;
-    const height = bbox.height * canvasHeight;
-
-    ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
-    ctx.lineWidth = 3;
-    ctx.fillStyle = 'rgba(255, 0, 0, 0.2)'; // Semi-transparent red fill
-    ctx.strokeRect(x, y, width, height);
-    ctx.fillRect(x, y, width, height);
-  }, []);
+  }, [currentPage, numPages, scale, selectedIssue, drawBbox]); // drawBbox is now correctly in scope
 
   const handlePrevPage = useCallback(() => {
     if (currentPage > 1) {
@@ -148,7 +162,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({
       <div className="flex items-center mb-4 sticky top-0 bg-white p-2 rounded-lg shadow-sm z-10">
         <button
           onClick={handlePrevPage}
-          disabled={currentPage <= 1}
+          disabled={currentPage <= 1 || numPages === 0}
           className="p-2 rounded-full bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           aria-label={t('prevPage')}
         >
@@ -163,15 +177,16 @@ export const PageViewer: React.FC<PageViewerProps> = ({
             onChange={handlePageInputChange}
             className="w-16 text-center border border-gray-300 rounded-md py-1 mx-2 focus:ring-blue-500 focus:border-blue-500"
             min="1"
-            max={numPages}
+            max={numPages > 0 ? numPages : 1} // Ensure max is at least 1 even if numPages is 0
             aria-label={`${t('goToPage')} ${currentPage} of ${numPages}`}
             title={t('typePageNumber')}
+            disabled={numPages === 0}
           />
           <span className="text-gray-700">of {numPages}</span>
         </div>
         <button
           onClick={handleNextPage}
-          disabled={currentPage >= numPages}
+          disabled={currentPage >= numPages || numPages === 0}
           className="p-2 rounded-full bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           aria-label={t('nextPage')}
         >
