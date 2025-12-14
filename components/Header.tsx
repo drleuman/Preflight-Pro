@@ -1,16 +1,24 @@
-
 import React from 'react';
-import { t } from '../i18n';
 
-export const Header: React.FC = () => {
+type Props = {
+  title: string;
+  subtitle?: string;
+};
+
+// The component now accepts and is typed with the 'Props' object
+const Header: React.FC<Props> = ({ title, subtitle }) => {
+  // Header temporarily hidden
+  return null; 
+
+  // When you want to show it again, you can use the props like this:
+  /*
   return (
-    <header className="bg-gradient-to-r from-blue-700 to-indigo-800 text-white p-6 shadow-lg">
-      <div className="container mx-auto flex justify-between items-center">
-        <h1 className="text-3xl font-extrabold tracking-tight">
-          {t('appName')}
-        </h1>
-        {/* Potentially add navigation or user info here */}
-      </div>
+    <header>
+      <h1>{title}</h1>
+      {subtitle && <p>{subtitle}</p>}
     </header>
   );
+  */
 };
+
+export default Header;

@@ -13,13 +13,24 @@ export const SEVERITY_ICONS: Record<Severity, string> = {
   [Severity.ERROR]: '⛔',
 };
 
-export const ISSUE_CATEGORY_LABELS: Record<IssueCategory, string> = {
-  [IssueCategory.IMAGES]: 'Images',
-  [IssueCategory.COLOR]: 'Color Spaces',
-  [IssueCategory.FONTS]: 'Fonts',
-  [IssueCategory.METADATA]: 'Metadata',
-  [IssueCategory.TRANSPARENCY]: 'Transparency',
-  [IssueCategory.BLEED_MARGINS]: 'Bleed & Margins',
-  [IssueCategory.RESOLUTION]: 'Resolution',
-  [IssueCategory.COMPLIANCE]: 'Compliance',
+import { IssueCategory } from './types';
+
+export const ISSUE_CATEGORY_LABELS: Record<IssueCategory | 'other', string> = {
+  images: 'Images',
+  color: 'Color Spaces',
+  fonts: 'Fonts',
+  metadata: 'Metadata',
+  transparency: 'Transparency',
+  bleed_margins: 'Bleed & Margins',
+  resolution: 'Resolution',
+  compliance: 'Compliance',
+  page_setup: 'Page setup',
+  annotations: 'Annotations',
+  form_fields: 'Form fields',
+  multimedia: 'Multimedia',
+  layers: 'Layers',
+  other: 'Other',
 };
+
+
+

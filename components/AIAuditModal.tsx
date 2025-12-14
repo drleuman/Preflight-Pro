@@ -1,130 +1,258 @@
-
-import React, { useState, useEffect, useCallback } from 'react';
-import { Issue } from '../types';
-import { ModalProps } from '../types';
-import { GoogleGenAI, GenerateContentResponse } from '@google/genai';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Issue, ModalProps, PreflightResult, FileMeta } from '../types';
 import { SafeHtmlMarkdown } from './SafeHtmlMarkdown';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import { t } from '../i18n';
+import { getIssueHint } from '../profiles/defaultProfile';
 
-interface AIAuditModalProps extends ModalProps {
-  issue: Issue | null;
-  geminiApiKey: string | null;
+type ModelInfo = { name: string; supportedGenerationMethods?: string[] };
+
+const API_VER = 'v1';
+
+async function pickAvailableModel(): Promise<string> {
+  const res = await fetch(`/api-proxy/${API_VER}/models?pageSize=200`);
+  if (!res.ok) {
+    throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
+  }
+  const data = await res.json();
+  const list: ModelInfo[] = Array.isArray(data?.models) ? data.models : [];
+  const gen = list.filter((m) =>
+    (m.supportedGenerationMethods || []).includes('generateContent')
+  );
+  const by = (k: string) => gen.find((m) => m.name?.toLowerCase().includes(k));
+  return (by('flash')?.name || by('pro')?.name || gen[0]?.name || '').replace(
+    /^models\//,
+    ''
+  );
 }
 
-export const AIAuditModal: React.FC<AIAuditModalProps> = ({ isOpen, onClose, issue, geminiApiKey }) => {
+function extractTextFromGenResponse(json: any): string {
+  try {
+    const cand = json?.candidates?.[0];
+    const parts = cand?.content?.parts;
+    if (Array.isArray(parts)) {
+      const all = parts
+        .map((p: any) => (typeof p?.text === 'string' ? p.text : ''))
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+      if (all) return all;
+    }
+    if (typeof json?.output_text === 'string' && json.output_text.trim()) {
+      return json.output_text.trim();
+    }
+    return '```\n' + JSON.stringify(json, null, 2) + '\n```';
+  } catch {
+    return '```\n' + JSON.stringify(json, null, 2) + '\n```';
+  }
+}
+
+type Props = ModalProps & {
+  issue: Issue | null;
+  fileMeta?: FileMeta | null;
+  result?: PreflightResult | null;
+};
+
+export const AIAuditModal: React.FC<Props> = ({
+  isOpen,
+  onClose,
+  issue,
+  fileMeta,
+  result,
+}) => {
   const [loading, setLoading] = useState(false);
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchAIExplanation = useCallback(async () => {
-    if (!issue || !geminiApiKey) {
-      setError(t('geminiKeyMissingError'));
-      return;
+  const buildPrompt = () => {
+    const fileName = fileMeta?.name || '(unknown file name)';
+    const fileSizeStr = fileMeta?.size
+      ? `${fileMeta.size} bytes (~${(fileMeta.size / (1024 * 1024)).toFixed(
+          1
+        )} MB)`
+      : 'unknown size';
+
+    const summary =
+      typeof (result as any)?.summary === 'string'
+        ? (result as any).summary
+        : typeof (result as any)?.summary?.text === 'string'
+        ? (result as any).summary.text
+        : '';
+
+    // Prompt específico por issue
+    if (issue) {
+      const hint = getIssueHint(issue);
+
+      const issueMessage =
+        (issue as any).message ||
+        issue.title ||
+        '(no explicit message provided)';
+      const issueDetails =
+        (issue as any).details ||
+        issue.description ||
+        '(no extra details provided)';
+
+      return `
+You are a prepress and print production expert. You help book authors fix technical PDF preflight issues.
+
+PDF context:
+- File name: ${fileName}
+- File size: ${fileSizeStr}
+${summary ? `- Global summary from engine: ${summary}` : ''}
+
+Specific issue detected by the engine:
+- Issue id: ${issue.id}
+- Category: ${issue.category ?? 'unknown'}
+- Page: ${issue.page ?? 'unknown'}
+- Severity: ${issue.severity ?? 'unknown'}
+- Engine message: ${issueMessage}
+- Engine details: ${issueDetails}
+
+Human-friendly explanation of this issue type:
+${hint.userFriendlySummary}
+
+Special instructions for you (the AI assistant):
+${hint.aiPrompt}
+
+Now respond with clear sections, using concise paragraphs and bullet points where helpful:
+
+1) What is happening (explain the problem in simple language).
+2) Why it matters in print (risks and visual impact).
+3) Fastest fix (quick steps in common tools like Acrobat, InDesign, or PitStop).
+4) Best quality fix (slightly more advanced but robust workflow).
+5) Checks to validate the fix (what to review in the new PDF: preflight, output preview, separations, etc.).
+`.trim();
     }
 
+    // Sin issue: auditoría general basada en contexto del PDF
+    const nameLine = fileMeta?.name ? `File: ${fileMeta.name}` : '';
+    const sizeLine = fileMeta?.size ? `Size: ${fileMeta.size} bytes` : '';
+
+    return `
+You are a senior prepress technician. Perform a concise, actionable AI audit for a PDF intended for book printing.
+
+${nameLine ? nameLine + '\n' : ''}${sizeLine ? sizeLine + '\n' : ''}${
+      summary ? `Known notes/summary from engine: ${summary}\n` : ''
+    }
+
+Focus on:
+- Fonts (embedding, small sizes, Type 3).
+- Color (RGB vs CMYK vs grayscale, mixing color spaces).
+- Transparency and overprint.
+- Bleed and trim boxes.
+- Image resolution.
+- Interactive elements (forms, annotations, multimedia, layers).
+
+Deliver your answer in sections:
+
+1) Top risks to inspect (prioritized list).
+2) Quick verification steps in Acrobat (with concrete menu paths).
+3) Suggested fixes (Acrobat / InDesign / PitStop) with bullet steps.
+4) Final validation checklist (Output Preview, Separations, Overprint, PDF/X profile).
+`.trim();
+  };
+
+  const fetchAI = useCallback(async () => {
     setLoading(true);
     setError(null);
     setAiResponse(null);
 
-    const prompt = `
-      You are an expert preflight analyst for print production.
-      Explain the following PDF preflight issue and provide step-by-step suggestions on how to fix it,
-      assuming the user might be using professional tools like Adobe InDesign or Acrobat.
-      Be concise, clear, and actionable. Use Markdown for formatting.
-
-      Issue Details:
-      - Category: ${issue.category}
-      - Severity: ${issue.severity}
-      - Page: ${issue.page}
-      - Message: ${issue.message}
-      ${issue.details ? `- Details: ${issue.details}` : ''}
-    `;
-
     try {
-      // Create a new GoogleGenAI instance right before making an API call
-      // to ensure it always uses the most up-to-date API key.
-      const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
-        contents: prompt,
-        config: {
-          temperature: 0.7,
-          maxOutputTokens: 1000,
-        },
-      });
-      setAiResponse(response.text);
+      const model = await pickAvailableModel();
+      if (!model) {
+        throw new Error(
+          'No Gemini model with generateContent available in this project.'
+        );
+      }
+
+      const prompt = buildPrompt();
+      const res = await fetch(
+        `/api-proxy/${API_VER}/models/${encodeURIComponent(
+          model
+        )}:generateContent`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        throw new Error(
+          `${res.status} ${res.statusText}: ${await res.text()}`
+        );
+      }
+      const json = await res.json();
+      setAiResponse(extractTextFromGenResponse(json));
     } catch (e: any) {
-      console.error('Gemini API Error:', e);
-      setError(t('aiError'));
-      // Specific error handling for "Requested entity was not found." for Veo, not strictly for text models,
-      // but good to keep in mind if we expand model usage.
+      setError(e?.message || t('aiError'));
+      setAiResponse(null);
     } finally {
       setLoading(false);
     }
-  }, [issue, geminiApiKey]);
+  }, [issue, fileMeta, result]);
 
   useEffect(() => {
-    if (isOpen && issue && geminiApiKey) {
-      fetchAIExplanation();
-    } else if (!isOpen) {
-      // Clear state when modal closes
+    if (isOpen) {
+      fetchAI();
+    } else {
       setAiResponse(null);
       setError(null);
       setLoading(false);
     }
-  }, [isOpen, issue, geminiApiKey, fetchAIExplanation]);
+  }, [isOpen, fetchAI]);
 
   if (!isOpen) return null;
 
+  const hint = issue ? getIssueHint(issue) : null;
+
   return (
-    <div
-      className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center p-4 z-50 transition-opacity duration-300"
-      aria-modal="true"
-      role="dialog"
-      aria-labelledby="ai-audit-modal-title"
-      tabIndex={-1}
-    >
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col transition-all duration-300 transform scale-95 opacity-0 animate-fade-in"
-           onClick={(e) => e.stopPropagation()} // Prevent closing when clicking inside modal
-      >
-        <div className="flex justify-between items-center p-4 border-b border-gray-200">
-          <h2 id="ai-audit-modal-title" className="text-xl font-semibold text-gray-800">
-            {t('aiAuditTitle')}
-          </h2>
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center">
+      <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full p-4">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <h2 className="text-lg font-semibold">{t('aiAuditTitle')}</h2>
+            {issue && hint && (
+              <p className="mt-1 text-xs text-gray-600">
+                {hint.shortTitle} — {hint.userFriendlySummary}
+              </p>
+            )}
+          </div>
           <button
+            className="p-2 rounded hover:bg-gray-100"
             onClick={onClose}
-            className="p-2 rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             aria-label={t('close')}
           >
-            <XMarkIcon className="h-6 w-6 text-gray-500" />
+            <XMarkIcon className="h-5 w-5" />
           </button>
         </div>
-        <div className="p-4 overflow-y-auto flex-grow">
-          {loading && (
-            <div className="flex flex-col items-center justify-center h-48">
-              <div className="loader ease-linear rounded-full border-4 border-t-4 border-blue-200 h-12 w-12 mb-4 animate-spin"></div>
-              <p className="text-gray-600">{t('fetchingAIResponse')}</p>
-            </div>
-          )}
-          {error && <p className="text-red-500 text-center p-4">{error}</p>}
-          {aiResponse && (
-            <div>
-              <h3 className="text-lg font-semibold mb-2">{t('aiResponse')}</h3>
-              <SafeHtmlMarkdown markdown={aiResponse} className="markdown-body p-2 bg-gray-50 rounded-md" />
-            </div>
-          )}
-          {!loading && !error && !aiResponse && issue && geminiApiKey && (
-             <p className="text-gray-500 text-center">No AI response yet. Click "Explain & Suggest Fix" to generate.</p>
-          )}
-          {!geminiApiKey && (
-             <p className="text-red-500 text-center">{t('geminiKeyMissingError')}</p>
-          )}
-        </div>
-        <div className="p-4 border-t border-gray-200 text-right">
+
+        {loading && (
+          <p className="text-sm text-gray-500">{t('fetchingAIResponse')}</p>
+        )}
+
+        {error && (
+          <p className="text-sm text-red-600 whitespace-pre-wrap break-words">
+            {error}
+          </p>
+        )}
+
+        {!loading && !error && aiResponse && (
+          <div className="prose max-w-none">
+            <SafeHtmlMarkdown markdown={aiResponse} />
+          </div>
+        )}
+
+        {!loading && !error && !aiResponse && (
+          <p className="text-sm text-gray-500">{t('noIssuesToDisplay')}</p>
+        )}
+
+        <div className="mt-4 text-right">
           <button
+            className="px-3 py-2 rounded bg-gray-100 hover:bg-gray-200"
             onClick={onClose}
-            className="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
           >
             {t('close')}
           </button>

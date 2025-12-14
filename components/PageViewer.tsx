@@ -1,12 +1,14 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import * as pdfjsLib from 'pdfjs-dist/build/pdf';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+(pdfjsLib as any).GlobalWorkerOptions.workerSrc = pdfWorker;
 import { Issue, Bbox } from '../types';
 import { ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
 import { t } from '../i18n';
 
 // Configure PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://aistudiocdn.com/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
+
 
 interface PageViewerProps {
   file: File | null;
@@ -193,7 +195,7 @@ export const PageViewer: React.FC<PageViewerProps> = ({
           <ChevronRightIcon className="h-5 w-5" />
         </button>
       </div>
-      <div className="flex-grow overflow-auto p-4 bg-gray-50 border border-gray-200 rounded-lg w-full max-w-full flex justify-center items-start">
+      <div className="pdf-viewer-container">
         <canvas ref={canvasRef} className="shadow-lg border border-gray-300 max-w-full h-auto"></canvas>
       </div>
     </div>

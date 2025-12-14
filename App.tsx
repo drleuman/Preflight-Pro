@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { GoogleGenAI } from '@google/genai';
-import { Header } from './components/Header';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import Header from './components/Header';
 import { PreflightDropzone } from './components/PreflightDropzone';
 import { PreflightSummary } from './components/PreflightSummary';
 import { IssuesPanel } from './components/IssuesPanel';
@@ -8,274 +7,504 @@ import { PageViewer } from './components/PageViewer';
 import { FixDrawer } from './components/FixDrawer';
 import { AIAuditModal } from './components/AIAuditModal';
 import { EfficiencyAuditModal } from './components/EfficiencyAuditModal';
-import { FileMeta, Issue, PreflightResult, PreflightWorkerCommand, PreflightWorkerMessage, Severity } from './types';
+
 import { t } from './i18n';
+import {
+  FileMeta,
+  Issue,
+  PreflightResult,
+  PreflightWorkerMessage,
+  PreflightWorkerCommand,
+} from './types';
 
-// Function to safely parse a JSON string from a script tag content
-function getImportMapContent(): { imports: { [key: string]: string } } {
-  const importMapScript = document.getElementById('main-importmap');
-  if (importMapScript && importMapScript.textContent) {
-    try {
-      // Parse the text content of the importmap script tag
-      const parsedMap = JSON.parse(importMapScript.textContent);
-      // Ensure the 'imports' key exists and is an object
-      if (parsedMap && typeof parsedMap === 'object' && parsedMap.imports && typeof parsedMap.imports === 'object') {
-        return { imports: parsedMap.imports };
-      }
-    } catch (e) {
-      console.error("Failed to parse main-importmap content:", e);
-    }
-  }
-  return { imports: {} }; // Fallback empty importmap
-}
-
-function App() {
+export default function App() {
+  // ---------- Main state ----------
   const [file, setFile] = useState<File | null>(null);
-  const [numPages, setNumPages] = useState<number>(0); // Initialize with 0 pages
-  const [preflightResult, setPreflightResult] = useState<PreflightResult | null>(null);
-  const [loadingState, setLoadingState] = useState<'idle' | 'loading' | 'analyzing' | 'error' | 'success'>('idle');
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [fileMeta, setFileMeta] = useState<FileMeta | null>(null);
+  const [numPages, setNumPages] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [result, setResult] = useState<PreflightResult | null>(null);
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
 
-  const [isAIAuditModalOpen, setIsAIAuditModalOpen] = useState(false);
-  const [isEfficiencyAuditModalOpen, setIsEfficiencyAuditModalOpen] = useState(false);
-  const [geminiApiKey, setGeminiApiKey] = useState<string | null>(null);
-  const [geminiKeyMissing, setGeminiKeyMissing] = useState(true);
+  // AI (drawer)
+  const [aiAuditOpen, setAiAuditOpen] = useState(false);
+  const [efficiencyOpen, setEfficiencyOpen] = useState(false);
+  const [issueForAudit, setIssueForAudit] = useState<Issue | null>(null);
 
+  // UI flags
+  const [isRunning, setIsRunning] = useState(false);
+  const [lastPdfUrl, setLastPdfUrl] = useState<string | null>(null);
+  const [lastPdfName, setLastPdfName] = useState<string | null>(null);
+  const lastPdfUrlRef = useRef<string | null>(null);
+
+  // ---------- Worker ----------
   const workerRef = useRef<Worker | null>(null);
 
-  // Initialize worker and handle messages
   useEffect(() => {
-    // Get Gemini API key from meta tag
-    const metaTag = document.querySelector('meta[name="gemini-api-key"]');
-    const apiKey = metaTag instanceof HTMLMetaElement ? metaTag.content : null;
-    setGeminiApiKey(apiKey);
-    setGeminiKeyMissing(!apiKey || apiKey === 'YOUR_KEY_HERE');
-
-    // Get the importmap content directly as an object to embed in the worker script
-    const importMapObject = getImportMapContent();
-    const importMapJSONString = JSON.stringify(importMapObject); // Stringify the actual object
-
-    // Create an inline script for the worker logic
-    const workerScript = `
-      // Worker scope - 'self' refers to the WorkerGlobalScope
-      self.importScripts(
-        'https://aistudiocdn.com/@babel/standalone@7.24.0/babel.min.js',
-        'https://aistudiocdn.com/systemjs@6.14.3/dist/s.min.js'
+    try {
+      const w = new Worker(
+        new URL('./workers/preflight.worker.ts', import.meta.url),
+        { type: 'module' }
       );
+      workerRef.current = w;
 
-      // SystemJS config for the worker
-      System.config({
-        baseURL: '${window.location.origin}/', // Base URL for resolving relative paths
-        map: ${importMapJSONString}.imports // Directly use the imports from the main document's importmap
-      });
+      w.onmessage = (ev: MessageEvent<PreflightWorkerMessage>) => {
+        const data = ev.data;
+        if (!data) return;
 
-      // Load the custom SystemJS loader in the worker first
-      System.import('./loader/systemjs-babel-loader.ts')
-        .then(() => {
-          // Then load the worker entry point, which exports { onmessage } as default
-          return System.import('./workers/preflight.worker.ts');
-        })
-        .then((module) => {
-          if (module && module.default && typeof module.default.onmessage === 'function') {
-            self.onmessage = module.default.onmessage;
-            console.log("Worker: preflight.worker.ts loaded and onmessage assigned.");
-          } else {
-            console.error("Worker: preflight.worker.ts did not export onmessage correctly.");
-          }
-        })
-        .catch(err => console.error('Worker: Error in worker setup sequence:', err));
-    `;
+        if (data.type === 'analysisProgress') {
+          // opcional: barra de progreso
+        } else if (data.type === 'analysisResult') {
+          setResult(data.result || null);
+          setIsRunning(false);
+        } else if (data.type === 'analysisError') {
+          console.error('Preflight worker error:', data.message);
+          setIsRunning(false);
+          window.alert('Preflight failed: ' + data.message);
+        } else if (data.type === 'transformResult') {
+          // PDF transformado (grayscale / rebuild)
+          const blob = new Blob([data.buffer], { type: 'application/pdf' });
+          const newFile = new File([blob], data.fileMeta.name, {
+            type: 'application/pdf',
+          });
 
-    const workerBlob = new Blob([workerScript], { type: 'application/javascript' });
-    const workerUrl = URL.createObjectURL(workerBlob);
-    const preflightWorker = new Worker(workerUrl);
-    workerRef.current = preflightWorker;
+          // 1) actualizar visor
+          setFile(newFile);
+          setFileMeta(data.fileMeta);
+          setResult(null);
+          setSelectedIssue(null);
+          setNumPages(0);
+          setCurrentPage(1);
+          setIsRunning(false);
 
-    preflightWorker.onmessage = (event: MessageEvent<PreflightWorkerMessage>) => {
-      if (event.data.type === 'analysisResult') {
-        const result = event.data.result;
-        setPreflightResult(result);
-        setLoadingState('success');
-        console.log("App: Analysis result received:", result);
-      } else if (event.data.type === 'analysisError') {
-        setAnalysisError(event.data.message);
-        setLoadingState('error');
-        console.error("App: Analysis error received:", event.data.message);
+          // 2) descargar (and keep a "Download last PDF" link)
+          downloadAndRemember(blob, data.fileMeta.name || 'output.pdf');
+
+
+          // 3) aviso
+          const opLabel =
+            data.operation === 'grayscale'
+              ? 'B&W / Grayscale'
+              : 'Rebuild ≥150 dpi';
+          window.alert(`Your ${opLabel} PDF is ready and has been downloaded.`);
+        } else if (data.type === 'transformError') {
+          console.error(
+            `Transform error (${data.operation}):`,
+            data.message
+          );
+          setIsRunning(false);
+          const opLabel =
+            data.operation === 'grayscale'
+              ? 'B&W / Grayscale'
+              : 'Rebuild ≥150 dpi';
+          window.alert(`${opLabel} failed: ${data.message}`);
+        }
+      };
+
+      return () => {
+        w.terminate();
+        workerRef.current = null;
+      };
+    } catch (e) {
+      console.error('Error creating worker', e);
+    }
+  }, []);
+
+
+  useEffect(() => {
+    return () => {
+      if (lastPdfUrlRef.current) {
+        try {
+          URL.revokeObjectURL(lastPdfUrlRef.current);
+        } catch (e) {}
+        lastPdfUrlRef.current = null;
       }
     };
+  }, []);
 
-    preflightWorker.onerror = (errorEvent) => {
-      console.error("App: Worker encountered an error:", errorEvent);
-      setAnalysisError(t('workerGenericError'));
-      setLoadingState('error');
-    };
+  const downloadAndRemember = useCallback((blob: Blob, filename: string) => {
+    try {
+      if (lastPdfUrlRef.current) {
+        URL.revokeObjectURL(lastPdfUrlRef.current);
+      }
+    } catch (e) {}
 
-    return () => {
-      preflightWorker.terminate();
-      URL.revokeObjectURL(workerUrl);
-    };
-  }, []); // Empty dependency array means this runs once on mount
+    const url = URL.createObjectURL(blob);
+    lastPdfUrlRef.current = url;
+    setLastPdfUrl(url);
+    setLastPdfName(filename);
 
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'output.pdf';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, []);
 
-  const handleFileSelect = useCallback((selectedFile: File) => {
-    setFile(selectedFile);
-    setPreflightResult(null);
+  // ---------- Handlers ----------
+
+  const onDropFile = useCallback((f: File | null) => {
+    setFile(f);
+    setResult(null);
     setSelectedIssue(null);
+    setNumPages(0);
     setCurrentPage(1);
-    setNumPages(0); // Reset page count when new file is selected
-    setAnalysisError(null);
-    setLoadingState('loading');
 
-    const fileMeta: FileMeta = {
-      name: selectedFile.name,
-      size: selectedFile.size,
-      type: selectedFile.type,
-    };
+    if (f) {
+      setFileMeta({ name: f.name, size: f.size, type: f.type });
+    } else {
+      setFileMeta(null);
+    }
+  }, []);
 
-    // Note: The worker still receives a mocked samplePageCount.
-    // In a real scenario, this would ideally be passed after PDF.js
-    // has determined the actual page count, or the worker would
-    // be responsible for loading the PDF itself to get page count.
-    const mockWorkerPageCount = 5; // Placeholder for the mock worker
+  // Run Preflight
+  const runPreflight = useCallback(async () => {
+    if (!file || !fileMeta) return;
+    if (!workerRef.current) {
+      console.error('Worker not ready');
+      return;
+    }
 
-    // Send command to worker
-    if (workerRef.current) {
-      setLoadingState('analyzing');
-      workerRef.current.postMessage({
+    try {
+      setIsRunning(true);
+      setResult(null);
+      setSelectedIssue(null);
+
+      const buffer = await file.arrayBuffer();
+
+      const cmd: PreflightWorkerCommand = {
         type: 'analyze',
         fileMeta,
-        samplePageCount: mockWorkerPageCount,
-      } as PreflightWorkerCommand);
-    }
-  }, []);
+        buffer,
+      };
 
-  const handleIssueSelect = useCallback((issue: Issue) => {
+      workerRef.current.postMessage(cmd, [buffer]);
+    } catch (e) {
+      console.error('runPreflight failed', e);
+      setIsRunning(false);
+      window.alert('Run Preflight failed: ' + (e as Error).message);
+    }
+  }, [file, fileMeta]);
+
+  // B&W / Grayscale (server-first; fallback to worker)
+  const convertToGrayscale = useCallback(async () => {
+    if (!file || !fileMeta) return;
+
+    try {
+      setIsRunning(true);
+      setResult(null);
+      setSelectedIssue(null);
+
+      // Prefer server-side fix (reliable PDF regeneration via Ghostscript)
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/api/convert/grayscale', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server grayscale failed (HTTP ${res.status})`);
+      }
+
+      const blob = await res.blob();
+      const newFileName = file.name.replace(/\.pdf$/i, '') + '_bw.pdf';
+
+      downloadAndRemember(blob, newFileName);
+
+      const newFile = new File([blob], newFileName, { type: 'application/pdf' });
+      setFile(newFile);
+      setFileMeta({ name: newFile.name, size: newFile.size, type: newFile.type });
+      setNumPages(0);
+      setCurrentPage(1);
+      setResult(null);
+      setSelectedIssue(null);
+      setIsRunning(false);
+      return;
+    } catch (e) {
+      console.warn('Server grayscale failed, falling back to worker:', e);
+    }
+
+    // Fallback: client-side worker transform
+    if (!workerRef.current) {
+      setIsRunning(false);
+      window.alert('B&W / Grayscale failed: worker not ready and server endpoint unavailable.');
+      return;
+    }
+
+    try {
+      setIsRunning(true);
+      setResult(null);
+      setSelectedIssue(null);
+
+      const buffer = await file.arrayBuffer();
+      const cmd: PreflightWorkerCommand = {
+        type: 'convertToGrayscale',
+        fileMeta,
+        buffer,
+      };
+      workerRef.current.postMessage(cmd, [buffer]);
+    } catch (e) {
+      console.error('convertToGrayscale failed', e);
+      setIsRunning(false);
+      window.alert('B&W / Grayscale failed: ' + (e as Error).message);
+    }
+  }, [file, fileMeta, downloadAndRemember]);
+
+  // Rebuild ≥150 dpi (server-first; fallback to worker)
+  const upscaleLowResImages = useCallback(async () => {
+    if (!file || !fileMeta) return;
+
+    try {
+      setIsRunning(true);
+      setResult(null);
+      setSelectedIssue(null);
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/api/convert/rebuild-150dpi?dpi=150', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server rebuild failed (HTTP ${res.status})`);
+      }
+
+      const blob = await res.blob();
+      const newFileName = file.name.replace(/\.pdf$/i, '') + '_rebuild_150dpi.pdf';
+
+      downloadAndRemember(blob, newFileName);
+
+      const newFile = new File([blob], newFileName, { type: 'application/pdf' });
+      setFile(newFile);
+      setFileMeta({ name: newFile.name, size: newFile.size, type: newFile.type });
+      setNumPages(0);
+      setCurrentPage(1);
+      setResult(null);
+      setSelectedIssue(null);
+      setIsRunning(false);
+      return;
+    } catch (e) {
+      console.warn('Server rebuild failed, falling back to worker:', e);
+    }
+
+    // Fallback: client-side worker transform
+    if (!workerRef.current) {
+      setIsRunning(false);
+      window.alert('Rebuild ≥150 dpi failed: worker not ready and server endpoint unavailable.');
+      return;
+    }
+
+    try {
+      setIsRunning(true);
+      setResult(null);
+      setSelectedIssue(null);
+
+      const buffer = await file.arrayBuffer();
+      const cmd: PreflightWorkerCommand = {
+        type: 'upscaleLowResImages',
+        fileMeta,
+        buffer,
+        minDpi: 150,
+      };
+      workerRef.current.postMessage(cmd, [buffer]);
+    } catch (e) {
+      console.error('upscaleLowResImages failed', e);
+      setIsRunning(false);
+      window.alert('Rebuild ≥150 dpi failed: ' + (e as Error).message);
+    }
+  }, [file, fileMeta, downloadAndRemember]);
+
+  // RGB → CMYK (backend)
+  const convertRgbToCmyk = useCallback(async () => {
+    if (!file) return;
+
+    try {
+      setIsRunning(true);
+      setResult(null);
+      setSelectedIssue(null);
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const res = await fetch('/api/convert/rgb-to-cmyk', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const newFileName =
+        file.name.replace(/\.pdf$/i, '') + '_cmyk.pdf';
+
+      downloadAndRemember(blob, newFileName);
+
+      const newFile = new File([blob], newFileName, {
+        type: 'application/pdf',
+      });
+      setFile(newFile);
+      setFileMeta({
+        name: newFile.name,
+        size: newFile.size,
+        type: newFile.type,
+      });
+      setNumPages(0);
+      setCurrentPage(1);
+    } catch (e) {
+      console.error('convertRgbToCmyk failed', e);
+      window.alert(
+        'RGB → CMYK conversion requires a server-side endpoint (/api/convert/rgb-to-cmyk). Please configure it on the backend.'
+      );
+    } finally {
+      setIsRunning(false);
+    }
+  }, [file, downloadAndRemember]);
+
+  const onPageChange = useCallback((p: number) => setCurrentPage(p), []);
+
+  const openIssue = useCallback((issue: Issue) => {
     setSelectedIssue(issue);
-    if (issue.page) {
+    if (typeof issue.page === 'number' && issue.page > 0) {
       setCurrentPage(issue.page);
     }
-    // Automatically open the drawer
-    // isAIAuditModalOpen and isEfficiencyAuditModalOpen are managed by their respective buttons.
   }, []);
 
-  const handleNumPagesChange = useCallback((count: number) => {
-    setNumPages(count);
+  const handleOpenAIAudit = useCallback((issue: Issue) => {
+    setIssueForAudit(issue);
+    setAiAuditOpen(true);
   }, []);
 
-  const openAIAuditModal = useCallback(() => setIsAIAuditModalOpen(true), []);
-  const closeAIAuditModal = useCallback(() => setIsAIAuditModalOpen(false), []);
+  const handleOpenEfficiencyTips = useCallback((issue: Issue) => {
+    setIssueForAudit(issue);
+    setEfficiencyOpen(true);
+  }, []);
 
-  const openEfficiencyAuditModal = useCallback(() => setIsEfficiencyAuditModalOpen(true), []);
-  const closeEfficiencyAuditModal = useCallback(() => setIsEfficiencyAuditModalOpen(false), []);
-
-  // Effect to navigate to issue page if selected issue changes
-  useEffect(() => {
-    if (selectedIssue && selectedIssue.page && selectedIssue.page !== currentPage) {
-      setCurrentPage(selectedIssue.page);
-    }
-  }, [selectedIssue, currentPage]);
-
-
+  // ---------- Render ----------
   return (
-    <div className="min-h-screen flex flex-col">
-      <Header />
-      <main className="flex-grow container mx-auto p-6 grid grid-cols-1 md:grid-cols-3 gap-6 relative">
-        {/* Left Column: Dropzone & Summary */}
-        <div className="md:col-span-1 space-y-6">
-          {loadingState === 'idle' && (
-            <PreflightDropzone onFileSelect={handleFileSelect} />
-          )}
+    <div className="min-h-screen bg-gray-100">
+      <main className="container mx-auto px-4 py-6">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200/70 px-4 sm:px-6 py-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            {/* LEFT COLUMN */}
+            <div className="space-y-6 lg:col-span-4">
+              <PreflightDropzone onDrop={onDropFile} />
 
-          {(loadingState === 'loading' || loadingState === 'analyzing') && (
-            <div className="bg-white p-6 rounded-lg shadow-md text-center">
-              <div className="loader ease-linear rounded-full border-4 border-t-4 border-blue-200 h-12 w-12 mb-4 animate-spin mx-auto"></div>
-              <p className="text-lg font-semibold text-blue-700">{loadingState === 'loading' ? t('loadingFile') : t('analyzingPDF')}</p>
-              <p className="text-gray-600">{loadingState === 'loading' ? t('preparingFileForAnalysis') : t('thisMayTakeAMoment')}</p>
-            </div>
-          )}
+              {/* ACTIONS */}
+              <div className="ppp-actions">
+                <button
+                  type="button"
+                  onClick={runPreflight}
+                  disabled={!file || isRunning}
+                  className="ppp-action ppp-action--run"
+                >
+                  <span className="ppp-action__step">1</span>
+                  <span className="ppp-action__label">Run Preflight</span>
+                </button>
 
-          {loadingState === 'error' && (
-            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative" role="alert">
-              <strong className="font-bold">Error!</strong>
-              <span className="block sm:inline"> {analysisError || 'An unknown error occurred during analysis.'}</span>
-              <span className="absolute top-0 bottom-0 right-0 px-4 py-3">
-                <svg className="fill-current h-6 w-6 text-red-500" role="button" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" onClick={() => setLoadingState('idle')}><title>Close</title><path d="M14.348 14.849a1.2 1.2 0 0 1-1.697 0L10 11.819l-2.651 3.029a1.2 1.2 0 1 1-1.697-1.697l2.758-3.15-2.759-3.15a1.2 1.2 0 1 1 1.697-1.697L10 8.183l2.651-3.031a1.2 1.2 0 1 1 1.697 1.697l-2.758 3.15 2.758 3.15a1.2 1.2 0 0 1 0 1.698z"/></svg>
-              </span>
-            </div>
-          )}
+                <button
+                  type="button"
+                  onClick={convertToGrayscale}
+                  disabled={!file || isRunning}
+                  className="ppp-action ppp-action--bw"
+                >
+                  <span className="ppp-action__step">2</span>
+                  <span className="ppp-action__label">B&amp;W / Grayscale</span>
+                </button>
 
-          {preflightResult && loadingState === 'success' && (
-            <PreflightSummary
-              score={preflightResult.score}
-              summary={preflightResult.summary}
-              issues={preflightResult.issues}
-            />
-          )}
+                <button
+                  type="button"
+                  onClick={convertRgbToCmyk}
+                  disabled={!file || isRunning}
+                  className="ppp-action ppp-action--cmyk"
+                >
+                  <span className="ppp-action__step">3</span>
+                  <span className="ppp-action__label">RGB → CMYK</span>
+                </button>
 
-          {geminiKeyMissing && (
-            <div className="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded-lg relative" role="alert">
-              <strong className="font-bold">Warning: </strong>
-              <span className="block sm:inline"> {t('geminiKeyMissingError')}</span>
-              <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:underline ml-2">
-                {t('billingDocLink')}
-              </a>
-            </div>
-          )}
-        </div>
+                <button
+                  type="button"
+                  onClick={upscaleLowResImages}
+                  disabled={!file || isRunning}
+                  className="ppp-action ppp-action--rebuild"
+                >
+                  <span className="ppp-action__step">4</span>
+                  <span className="ppp-action__label">Rebuild ≥150 dpi</span>
+                </button>
+              </div>
 
-        {/* Middle Column: PDF Viewer */}
-        <div className="md:col-span-2 flex flex-col space-y-6">
-          <div className="bg-white p-6 rounded-lg shadow-md flex-grow flex flex-col overflow-hidden">
-            <h2 className="text-xl font-semibold mb-4">{t('pdfViewer')}</h2>
-            <PageViewer
-              file={file}
-              numPages={numPages}
-              currentPage={currentPage}
-              onPageChange={setCurrentPage}
-              onNumPagesChange={handleNumPagesChange} // Pass the callback
-              selectedIssue={selectedIssue}
-            />
-          </div>
+              {lastPdfUrl && (
+                <div className="ppp-download-last">
+                  <a
+                    href={lastPdfUrl}
+                    download={lastPdfName || 'output.pdf'}
+                    className="ppp-download-last__link"
+                  >
+                    Download last PDF
+                  </a>
+                  {lastPdfName ? (
+                    <span className="ppp-download-last__name">{lastPdfName}</span>
+                  ) : null}
+                </div>
+              )}
 
-          {/* Issues Panel below PDF Viewer */}
-          {preflightResult && loadingState === 'success' && (
-            <div className="bg-white p-6 rounded-lg shadow-md h-96 flex flex-col">
               <IssuesPanel
-                issues={preflightResult.issues}
-                selectedIssue={selectedIssue}
-                onIssueSelect={handleIssueSelect}
+                result={result}
+                onSelectIssue={openIssue}
+                emptyHint={t('noIssuesToDisplay')}
+                onRunPreflight={runPreflight}
+                isRunning={isRunning}
+              />
+
+              <PreflightSummary
+                fileMeta={fileMeta}
+                result={result}
+                onRunPreflight={runPreflight}
+                isRunning={isRunning}
               />
             </div>
-          )}
+
+            {/* RIGHT COLUMN */}
+            <div className="lg:col-span-8 sticky top-6 self-start">
+              <PageViewer
+                file={file}
+                numPages={numPages}
+                currentPage={currentPage}
+                onPageChange={onPageChange}
+                onNumPagesChange={setNumPages}
+                selectedIssue={selectedIssue}
+              />
+            </div>
+          </div>
         </div>
       </main>
 
-      {/* Fix Drawer (right-aligned) */}
       <FixDrawer
         issue={selectedIssue}
-        geminiApiKey={geminiApiKey}
-        onAIAuditClick={openAIAuditModal}
-        onEfficiencyAuditClick={openEfficiencyAuditModal}
-        geminiKeyMissing={geminiKeyMissing}
+        onClose={() => setSelectedIssue(null)}
+        onOpenAIAudit={handleOpenAIAudit}
+        onOpenEfficiencyTips={handleOpenEfficiencyTips}
       />
-
-      {/* Modals */}
       <AIAuditModal
-        isOpen={isAIAuditModalOpen}
-        onClose={closeAIAuditModal}
-        issue={selectedIssue}
-        geminiApiKey={geminiApiKey}
+        isOpen={aiAuditOpen}
+        onClose={() => setAiAuditOpen(false)}
+        issue={issueForAudit}
+        fileMeta={fileMeta}
+        result={result}
       />
       <EfficiencyAuditModal
-        isOpen={isEfficiencyAuditModalOpen}
-        onClose={closeEfficiencyAuditModal}
-        issue={selectedIssue}
-        geminiApiKey={geminiApiKey}
+        isOpen={efficiencyOpen}
+        onClose={() => setEfficiencyOpen(false)}
+        issue={issueForAudit}
+        fileMeta={fileMeta}
+        result={result}
       />
     </div>
   );
 }
-
-export default App;

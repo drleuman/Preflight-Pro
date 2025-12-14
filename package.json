@@ -11,12 +11,13 @@
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "@google/genai": "^1.29.0",
     "@heroicons/react": "^2.2.0",
-    "pdfjs-dist": "^5.4.394",
+    "pdfjs-dist": "^4.6.82",
     "marked": "^16.4.1",
     "dompurify": "^3.3.0",
-    "webworker": "^0.8.4"
+    "webworker": "^0.8.4",
+    "@google/generative-ai": "^0.16.0",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
