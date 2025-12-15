@@ -20,7 +20,8 @@ const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 
 const app = express();
-const port = process.env.PORT || 3000;
+// Cloud Run (and most PaaS) inject PORT=8080. Default to 8080 for local runs.
+const port = Number.parseInt(process.env.PORT || '8080', 10);
 
 // -------- PDF fix endpoints (Ghostscript) --------
 const uploadDir = path.join(os.tmpdir(), 'ppp-preflight');
@@ -342,7 +343,7 @@ app.get(/^\/(?!api-proxy\/).*/, (req, res) => {
 });
 
 // -------- WebSocket proxy a Gemini --------
-const server = app.listen(port, () => {
+const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Server listening on :${port}`);
   console.log(`HTTP proxy active at /api-proxy/**`);
 });

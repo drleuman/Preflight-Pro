@@ -27,11 +27,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends ghostscript \
 
 WORKDIR /app
 
-#Copy server files
-COPY --from=builder /app/server .
-# Copy built frontend assets from the builder stage
+# Install server deps in the final image to guarantee node_modules exist
+# (Cloud Run runtime sometimes ends up without node_modules when copying from a builder layer.)
+COPY --from=builder /app/server/package*.json ./
+RUN npm install --omit=dev
+
+# Copy server entry + built frontend
+COPY --from=builder /app/server/server.js ./server.js
 COPY --from=builder /app/dist ./dist
 
-EXPOSE 3000
+# Cloud Run expects the app to listen on $PORT (defaults to 8080).
+EXPOSE 8080
 
 CMD ["node", "server.js"]
